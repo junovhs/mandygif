@@ -7,10 +7,23 @@ export class Timeline {
     this.endFrame = frames.length;
     this.onTrim = null;
     
+    if (!container) {
+      console.error('Timeline: container is null');
+      return;
+    }
+    
+    if (!frames || frames.length === 0) {
+      console.error('Timeline: no frames provided');
+      return;
+    }
+    
+    console.log('Timeline initialized with', frames.length, 'frames');
     this.render();
   }
   
   render() {
+    if (!this.container) return;
+    
     this.container.innerHTML = '';
     
     const track = document.createElement('div');
@@ -20,6 +33,7 @@ export class Timeline {
       background: #1a1a1a;
       border-radius: 4px;
       overflow: hidden;
+      min-height: 60px;
     `;
     
     // Frame thumbnails
@@ -43,7 +57,7 @@ export class Timeline {
     
     track.appendChild(thumbContainer);
     
-    // Trim handles
+    // Trim overlay
     const trimOverlay = document.createElement('div');
     trimOverlay.style.cssText = `
       position: absolute;
@@ -73,6 +87,7 @@ export class Timeline {
       justify-content: center;
       color: white;
       font-size: 10px;
+      z-index: 10;
     `;
     startHandle.innerHTML = '◀';
     
@@ -91,6 +106,7 @@ export class Timeline {
       justify-content: center;
       color: white;
       font-size: 10px;
+      z-index: 10;
     `;
     endHandle.innerHTML = '▶';
     
@@ -101,6 +117,8 @@ export class Timeline {
     
     this.updateTrimOverlay();
     this.attachDragHandlers(startHandle, endHandle, track);
+    
+    console.log('Timeline rendered successfully');
   }
   
   attachDragHandlers(startHandle, endHandle, track) {
@@ -109,6 +127,7 @@ export class Timeline {
     const onMouseDown = (handle, type) => (e) => {
       dragging = type;
       e.preventDefault();
+      e.stopPropagation();
     };
     
     startHandle.addEventListener('mousedown', onMouseDown(startHandle, 'start'));
@@ -141,6 +160,8 @@ export class Timeline {
   }
   
   updateTrimOverlay() {
+    if (!this.trimOverlay) return;
+    
     const startPercent = (this.startFrame / this.frames.length) * 100;
     const endPercent = (this.endFrame / this.frames.length) * 100;
     

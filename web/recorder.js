@@ -16,7 +16,7 @@ class Recorder {
     this.captureCtx = null;
     this.captureInterval = null;
     this.bounds = null;
-    this.captureFrameRate = 30; // Capture at 30fps
+    this.captureFrameRate = 30;
     
     this.screenSelector = new ScreenSelector();
     this.timeline = null;
@@ -42,9 +42,8 @@ class Recorder {
     });
     
     window.electronAPI.onCaptureBoundsReady(async (bounds) => {
-      // Use entire screen as source
       const result = await window.electronAPI.startRecording({
-        sourceId: 'screen:0:0', // Default to entire screen
+        sourceId: 'screen:0:0',
         bounds: bounds
       });
       
@@ -59,7 +58,6 @@ class Recorder {
   }
   
   async startNewRecording() {
-    // Skip window selection, go straight to overlay for entire screen
     const overlayResult = await window.electronAPI.showCaptureOverlay();
     if (!overlayResult.success) {
       toast('Failed to show overlay');
@@ -68,7 +66,6 @@ class Recorder {
   
   async startCapture(sourceId, bounds) {
     try {
-      // Get entire screen instead of specific window
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
@@ -101,7 +98,6 @@ class Recorder {
       this.recordedFrames = [];
       this.bounds = bounds;
       
-      // Capture at consistent 30fps
       const frameInterval = 1000 / this.captureFrameRate;
       
       this.captureInterval = setInterval(() => {
@@ -157,17 +153,24 @@ class Recorder {
     }
     
     this.setState('editor');
-    this.initEditor();
+    await this.initEditor();
     toast(`${this.recordedFrames.length} frames captured at ${this.captureFrameRate}fps`);
   }
   
-  initEditor() {
+  async initEditor() {
+    // Small delay to ensure DOM is ready
+    await new Promise(r => setTimeout(r, 100));
+    
     const canvas = $('#preview-canvas');
     this.gifPreview = new GifPreview(canvas, this.recordedFrames);
     this.gifPreview.render();
     this.gifPreview.startAnimation(15);
     
-    this.timeline = new Timeline($('#timeline-container'), this.recordedFrames);
+    const timelineContainer = $('#timeline-container');
+    console.log('Initializing timeline with container:', timelineContainer);
+    console.log('Frame count:', this.recordedFrames.length);
+    
+    this.timeline = new Timeline(timelineContainer, this.recordedFrames);
     this.timeline.onTrim = (start, end) => {
       this.gifPreview.setRange(start, end);
       this.updateEstimate();
@@ -185,13 +188,13 @@ class Recorder {
     let estimatedBytes;
     
     if (format === 'webp') {
-      estimatedBytes = frameCount * 20000 * quality; // WebP is very efficient
+      estimatedBytes = frameCount * 20000 * quality;
     } else if (format === 'mp4') {
-      const duration = frameCount / this.captureFrameRate; // Use capture framerate for duration
+      const duration = frameCount / this.captureFrameRate;
       const bitrate = 2500000 * quality;
       estimatedBytes = (bitrate / 8) * duration;
     } else {
-      estimatedBytes = frameCount * 50000 * quality; // GIF is large
+      estimatedBytes = frameCount * 50000 * quality;
     }
     
     const estimatedMB = (estimatedBytes / 1024 / 1024).toFixed(1);
@@ -228,14 +231,11 @@ class Recorder {
   }
   
   async exportWebP(frames, targetFPS, quality) {
-    this.updateProgress('Creating animated WebP...', 0);
-    
     const canvas = document.createElement('canvas');
     canvas.width = frames[0].width;
     canvas.height = frames[0].height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
-    // Downsample frames to target FPS
     const frameInterval = Math.round(this.captureFrameRate / targetFPS);
     const sampledFrames = frames.filter((_, i) => i % frameInterval === 0);
     
@@ -245,8 +245,16 @@ class Recorder {
       ctx.putImageData(sampledFrames[i], 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       frameBuffers.push(imageData.data.buffer);
+      
       this.updateProgress(`Processing frame ${i + 1}/${sampledFrames.length}`, (i + 1) / sampledFrames.length * 100);
+      
+      if (i % 3 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
+    
+    this.updateProgress('Encoding WebP...', 100);
+    await new Promise(r => setTimeout(r, 100));
     
     const result = await window.electronAPI.exportWebP({
       frames: frameBuffers,
@@ -266,14 +274,11 @@ class Recorder {
   }
   
   async exportMP4(frames, targetFPS, quality) {
-    this.updateProgress('Encoding MP4...', 0);
-    
     const canvas = document.createElement('canvas');
     canvas.width = frames[0].width;
     canvas.height = frames[0].height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
-    // Downsample frames to target FPS
     const frameInterval = Math.round(this.captureFrameRate / targetFPS);
     const sampledFrames = frames.filter((_, i) => i % frameInterval === 0);
     
@@ -283,8 +288,16 @@ class Recorder {
       ctx.putImageData(sampledFrames[i], 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       frameBuffers.push(imageData.data.buffer);
+      
       this.updateProgress(`Processing frame ${i + 1}/${sampledFrames.length}`, (i + 1) / sampledFrames.length * 100);
+      
+      if (i % 3 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
+    
+    this.updateProgress('Encoding MP4...', 100);
+    await new Promise(r => setTimeout(r, 100));
     
     const result = await window.electronAPI.exportMP4({
       frames: frameBuffers,
@@ -304,14 +317,11 @@ class Recorder {
   }
   
   async exportGIF(frames, targetFPS, quality) {
-    this.updateProgress('Encoding GIF...', 0);
-    
     const canvas = document.createElement('canvas');
     canvas.width = frames[0].width;
     canvas.height = frames[0].height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
-    // Downsample frames to target FPS
     const frameInterval = Math.round(this.captureFrameRate / targetFPS);
     const sampledFrames = frames.filter((_, i) => i % frameInterval === 0);
     
@@ -321,8 +331,16 @@ class Recorder {
       ctx.putImageData(sampledFrames[i], 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       frameBuffers.push(imageData.data.buffer);
+      
       this.updateProgress(`Processing frame ${i + 1}/${sampledFrames.length}`, (i + 1) / sampledFrames.length * 100);
+      
+      if (i % 3 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
+    
+    this.updateProgress('Encoding GIF...', 100);
+    await new Promise(r => setTimeout(r, 100));
     
     const result = await window.electronAPI.exportGIF({
       frames: frameBuffers,

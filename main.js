@@ -1,180 +1,316 @@
-// webphy/main.js
-
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 
 let mainWindow;
+let overlayWindow = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1400,
+    height: 900,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  
   mainWindow.loadFile(path.join(__dirname, 'web/index.html'));
 }
 
 app.whenReady().then(createWindow);
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
 
-ipcMain.handle('export-frame', async (event, dataUrl, suggestedName) => {
-  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: suggestedName || 'frame.webp',
-    filters: [{ name: 'WebP Image', extensions: ['webp'] }],
+ipcMain.handle('get-sources', async () => {
+  const { desktopCapturer } = require('electron');
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'], // Only screens, not windows
+    thumbnailSize: { width: 300, height: 200 }
   });
-  if (canceled || !filePath) return { success: false, cancelled: true };
+  
+  return sources.map(source => ({
+    id: source.id,
+    name: source.name,
+    thumbnail: source.thumbnail.toDataURL()
+  }));
+});
+
+ipcMain.handle('show-capture-overlay', async (event) => {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width, height } = primaryDisplay.bounds;
+  
+  overlayWindow = new BrowserWindow({
+    width: width,
+    height: height,
+    x: 0,
+    y: 0,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  
+  overlayWindow.loadFile(path.join(__dirname, 'web/overlay.html'));
+  overlayWindow.setIgnoreMouseEvents(false);
+  
+  return { success: true, screenWidth: width, screenHeight: height };
+});
+
+ipcMain.handle('capture-confirmed', async (event, bounds) => {
+  if (overlayWindow) {
+    overlayWindow.close();
+    overlayWindow = null;
+  }
+  
+  // Get the first screen source
+  const { desktopCapturer } = require('electron');
+  const sources = await desktopCapturer.getSources({ types: ['screen'] });
+  const screenSource = sources[0];
+  
+  mainWindow.webContents.send('recording-source-ready', { 
+    sourceId: screenSource.id, 
+    bounds: bounds 
+  });
+  
+  return { success: true };
+});
+
+ipcMain.handle('capture-cancelled', async (event) => {
+  if (overlayWindow) {
+    overlayWindow.close();
+    overlayWindow = null;
+  }
+  mainWindow.webContents.send('capture-cancelled');
+  return { success: true };
+});
+
+ipcMain.handle('start-recording', async (event, config) => {
   try {
-    const base64Data = dataUrl.replace(/^data:image\/webp;base64,/, "");
-    fs.writeFileSync(filePath, base64Data, 'base64');
-    return { success: true, path: filePath };
+    return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
 
-// Main export handler
-ipcMain.handle('export-video-start', async (event, config) => {
+ipcMain.handle('stop-recording', async (event, frames) => {
+  return { success: true, frames: frames || [] };
+});
+
+ipcMain.handle('export-webp', async (event, data) => {
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: 'output.mp4',
-    filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+    defaultPath: 'recording.webp',
+    filters: [{ name: 'Animated WebP', extensions: ['webp'] }]
   });
-
-  if (canceled) {
-    return { success: false, cancelled: true };
+  
+  if (canceled) return { success: false, cancelled: true };
+  
+  try {
+    const { frames, fps, width, height, quality } = data;
+    
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn(ffmpegPath, [
+        '-f', 'rawvideo',
+        '-pix_fmt', 'rgba',
+        '-s', `${width}x${height}`,
+        '-r', String(fps),
+        '-i', '-',
+        '-c:v', 'libwebp',
+        '-lossless', '0',
+        '-compression_level', '6',
+        '-quality', String(Math.round(quality * 100)),
+        '-loop', '0',
+        '-y',
+        filePath
+      ]);
+      
+      ffmpeg.on('error', (err) => {
+        reject(err);
+      });
+      
+      ffmpeg.stdin.on('error', (err) => {
+        if (err.code !== 'EPIPE') {
+          reject(err);
+        }
+      });
+      
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve({ success: true, path: filePath });
+        } else {
+          reject(new Error(`FFmpeg exited with code ${code}`));
+        }
+      });
+      
+      // Write frames sequentially
+      let frameIndex = 0;
+      const writeNextFrame = () => {
+        if (frameIndex < frames.length) {
+          const success = ffmpeg.stdin.write(Buffer.from(frames[frameIndex]));
+          frameIndex++;
+          if (success) {
+            setImmediate(writeNextFrame);
+          } else {
+            ffmpeg.stdin.once('drain', writeNextFrame);
+          }
+        } else {
+          ffmpeg.stdin.end();
+        }
+      };
+      
+      writeNextFrame();
+    });
+    
+  } catch (error) {
+    return { success: false, error: error.message };
   }
+});
 
-  const outputPath = filePath;
-  const { inputPath, width, height, fps, duration, params } = config;
-  const totalFrames = Math.floor(duration * fps);
-  
-  // --- CRITICAL FIX: Sanitize dimensions for H.264 compatibility ---
-  // Ensure width and height are even numbers by rounding down.
-  const safeWidth = Math.floor(width / 2) * 2;
-  const safeHeight = Math.floor(height / 2) * 2;
-  console.log(`[EXPORT] Original dimensions: ${width}x${height}. Sanitized for encoder: ${safeWidth}x${safeHeight}`);
-
-  const exportWindow = new BrowserWindow({
-    show: false,
-    width: safeWidth,
-    height: safeHeight,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      offscreen: false,
-    },
+ipcMain.handle('export-mp4', async (event, data) => {
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: 'recording.mp4',
+    filters: [{ name: 'MP4 Video', extensions: ['mp4'] }]
   });
-  exportWindow.loadFile(path.join(__dirname, 'web/export.html'));
   
-  return new Promise((resolve) => {
-    let decoder, encoder;
-    let frameCounter = 0;
-    let rendererReady = false;
-    let processing = false;
-
-    const processNextFrame = () => {
-      if (!rendererReady || processing) return;
+  if (canceled) return { success: false, cancelled: true };
+  
+  try {
+    const { frames, fps, width, height, quality } = data;
+    const crf = Math.round(51 - (quality * 28));
+    
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn(ffmpegPath, [
+        '-f', 'rawvideo',
+        '-pix_fmt', 'rgba',
+        '-s', `${width}x${height}`,
+        '-r', String(fps),
+        '-i', '-',
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', String(crf),
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        '-y',
+        filePath
+      ]);
       
-      const frameSize = safeWidth * safeHeight * 4; // Use safe dimensions
-      const frameBuffer = decoder.stdout.read(frameSize);
-
-      if (frameBuffer) {
-        processing = true;
-        exportWindow.webContents.send('export-frame-data', {
-          frameNumber: frameCounter,
-          pixels: frameBuffer.buffer
-        }, [frameBuffer.buffer]);
-      }
-    };
-
-    ipcMain.once('export-renderer-ready', () => {
-      rendererReady = true;
-      console.log("[EXPORT] Renderer is ready. Starting video pipeline.");
-      processNextFrame();
-    });
-
-    ipcMain.on('export-frame-result', (event, { frameNumber, pixels }) => {
-      encoder.stdin.write(Buffer.from(pixels));
-      processing = false;
-      frameCounter++;
+      ffmpeg.on('error', (err) => {
+        reject(err);
+      });
       
-      const progress = Math.min(100, Math.round((frameCounter / totalFrames) * 100));
-      mainWindow.webContents.send('export-progress', { progress, frameIndex: frameCounter, totalFrames });
+      ffmpeg.stdin.on('error', (err) => {
+        if (err.code !== 'EPIPE') {
+          reject(err);
+        }
+      });
       
-      if (frameCounter >= totalFrames) {
-        if(decoder && !decoder.killed) decoder.kill();
-        if(encoder && encoder.stdin) encoder.stdin.end();
-      } else {
-        processNextFrame();
-      }
-    });
-
-    ipcMain.once('export-error', (event, error) => {
-      console.error("[EXPORT] Renderer error:", error);
-      if (decoder) decoder.kill();
-      if (encoder) encoder.kill();
-      if (exportWindow && !exportWindow.isDestroyed()) exportWindow.close();
-      resolve({ success: false, error: `Renderer Error: ${error}` });
-    });
-
-    // 1. FFmpeg DECODER: Use SAFE dimensions for scaling
-    const decoderArgs = [
-      '-i', inputPath,
-      '-r', String(fps),
-      '-f', 'rawvideo',
-      '-pix_fmt', 'rgba',
-      '-vf', `scale=${safeWidth}:${safeHeight}`, // Use safe dimensions
-      '-'
-    ];
-    decoder = spawn(ffmpegPath, decoderArgs);
-    decoder.stdout.on('readable', processNextFrame);
-    decoder.stderr.on('data', data => console.log(`[DECODER]: ${data.toString()}`));
-    decoder.on('close', (code) => { 
-        if (code !== 0 && frameCounter < totalFrames) console.error(`[DECODER] Exited unexpectedly with code ${code}`);
-    });
-
-    // 2. FFmpeg ENCODER: Use SAFE dimensions for input stream
-    const encoderArgs = [
-      '-f', 'rawvideo',
-      '-pix_fmt', 'rgba',
-      '-s', `${safeWidth}x${safeHeight}`, // Use safe dimensions
-      '-r', String(fps),
-      '-i', '-',
-      '-c:v', 'libx264',
-      '-preset', 'medium',
-      '-crf', '18',
-      '-pix_fmt', 'yuv420p',
-      '-movflags', '+faststart',
-      '-y',
-      outputPath
-    ];
-    encoder = spawn(ffmpegPath, encoderArgs);
-    encoder.stderr.on('data', data => console.log(`[ENCODER]: ${data.toString()}`));
-    encoder.on('close', (code) => {
-      ipcMain.removeAllListeners('export-frame-result');
-      if (exportWindow && !exportWindow.isDestroyed()) exportWindow.close();
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve({ success: true, path: filePath });
+        } else {
+          reject(new Error(`FFmpeg exited with code ${code}`));
+        }
+      });
       
-      if (code === 0) {
-        mainWindow.webContents.send('export-complete', { success: true });
-        resolve({ success: true });
-      } else {
-        const msg = `Encoder exited with code ${code}. Check logs for details.`;
-        mainWindow.webContents.send('export-complete', { success: false, error: msg });
-        resolve({ success: false, error: msg });
-      }
+      // Write frames sequentially to avoid EPIPE
+      let frameIndex = 0;
+      const writeNextFrame = () => {
+        if (frameIndex < frames.length) {
+          const success = ffmpeg.stdin.write(Buffer.from(frames[frameIndex]));
+          frameIndex++;
+          if (success) {
+            setImmediate(writeNextFrame);
+          } else {
+            ffmpeg.stdin.once('drain', writeNextFrame);
+          }
+        } else {
+          ffmpeg.stdin.end();
+        }
+      };
+      
+      writeNextFrame();
     });
+    
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
 
-    // Initialize the renderer with the SAFE dimensions
-    exportWindow.webContents.once('dom-ready', () => {
-      exportWindow.webContents.send('init-export', { width: safeWidth, height: safeHeight, params });
-    });
+ipcMain.handle('export-gif', async (event, data) => {
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: 'recording.gif',
+    filters: [{ name: 'GIF', extensions: ['gif'] }]
   });
+  
+  if (canceled) return { success: false, cancelled: true };
+  
+  try {
+    const { frames, fps, width, height, quality } = data;
+    
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn(ffmpegPath, [
+        '-f', 'rawvideo',
+        '-pix_fmt', 'rgba',
+        '-s', `${width}x${height}`,
+        '-r', String(fps),
+        '-i', '-',
+        '-vf', `fps=${fps},scale=${width}:${height}:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256[p];[s1][p]paletteuse=dither=bayer`,
+        '-loop', '0',
+        '-y',
+        filePath
+      ]);
+      
+      ffmpeg.on('error', (err) => {
+        reject(err);
+      });
+      
+      ffmpeg.stdin.on('error', (err) => {
+        if (err.code !== 'EPIPE') {
+          reject(err);
+        }
+      });
+      
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve({ success: true, path: filePath });
+        } else {
+          reject(new Error(`FFmpeg exited with code ${code}`));
+        }
+      });
+      
+      // Write frames sequentially
+      let frameIndex = 0;
+      const writeNextFrame = () => {
+        if (frameIndex < frames.length) {
+          const success = ffmpeg.stdin.write(Buffer.from(frames[frameIndex]));
+          frameIndex++;
+          if (success) {
+            setImmediate(writeNextFrame);
+          } else {
+            ffmpeg.stdin.once('drain', writeNextFrame);
+          }
+        } else {
+          ffmpeg.stdin.end();
+        }
+      };
+      
+      writeNextFrame();
+    });
+    
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });

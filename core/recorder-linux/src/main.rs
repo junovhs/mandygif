@@ -144,9 +144,36 @@ fn start_recording(
         .context("Failed to set pipeline to PLAYING state")?;
     
     let mut state_guard = state.lock().unwrap();
-    state_guard.pipeline = Some(pipeline);
+    state_guard.pipeline = Some(pipeline.clone());
     state_guard.output_path = Some(output_path);
+    drop(state_guard);
     
+    // Spawn progress reporter thread (uses sync GStreamer queries)
+    let pipe_weak = pipeline.downgrade();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            
+            if let Some(pipe) = pipe_weak.upgrade() {
+                if let Some(pos) = pipe.query_position::<gst::ClockTime>() {
+                    let event = RecorderEvent::Progress {
+                        pts_ms: pos.mseconds(),
+                    };
+                    if let Ok(json) = to_jsonl(&event) {
+                        use std::io::Write;
+                        let stdout = std::io::stdout();
+                        let mut handle = stdout.lock();
+                        let _ = handle.write_all(json.as_bytes());
+                        let _ = handle.flush();
+                        drop(handle);
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    });
+
     Ok(())
 }
 

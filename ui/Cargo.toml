@@ -1,0 +1,24 @@
+[package]
+name = "mandygif-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mandygif"
+path = "src/main.rs"
+
+[dependencies]
+mandygif-protocol = { path = "../core/protocol" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+
+# Slint UI framework
+slint = "1.4"
+
+[build-dependencies]
+slint-build = "1.4"

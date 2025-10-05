@@ -1,0 +1,30 @@
+[package]
+name = "mandygif-encoder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "encoder"
+path = "src/main.rs"
+
+[dependencies]
+mandygif-protocol = { path = "../protocol" }
+mandygif-captions = { path = "../captions" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+
+# GIF encoding
+gifski = "1.14"
+imgref = "1.10"
+rgb = "0.8"
+
+# Image loading
+image = "0.25"
+
+# Temp directories
+tempfile = "3.10"

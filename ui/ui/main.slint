@@ -1,0 +1,56 @@
+import { Button, VerticalBox } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    title: "MandyGIF";
+    width: 400px;
+    height: 300px;
+    
+    // State
+    in-out property <bool> recording: false;
+    
+    // Callbacks
+    callback start-recording();
+    callback stop-recording();
+    
+    VerticalBox {
+        padding: 20px;
+        spacing: 10px;
+        
+        Text {
+            text: "MandyGIF Screen Recorder";
+            font-size: 24px;
+            horizontal-alignment: center;
+        }
+        
+        Rectangle {
+            height: 100px;
+            border-width: 2px;
+            border-color: #3b82f6;
+            border-radius: 8px;
+            
+            Text {
+                text: recording ? "● Recording..." : "Ready";
+                font-size: 18px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                color: recording ? #ef4444 : #64748b;
+            }
+        }
+        
+        HorizontalLayout {
+            spacing: 10px;
+            
+            Button {
+                text: "Start Recording";
+                enabled: !recording;
+                clicked => { start-recording() }
+            }
+            
+            Button {
+                text: "Stop Recording";
+                enabled: recording;
+                clicked => { stop-recording() }
+            }
+        }
+    }
+}

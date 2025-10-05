@@ -1,0 +1,18 @@
+[package]
+name = "mandygif-captions"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+mandygif-protocol = { path = "../protocol" }
+anyhow.workspace = true
+
+# Phase 1: Will use ffmpeg drawtext (external process)
+# Phase 2: skia-safe for direct rendering
+# skia-safe = { version = "0.74", optional = true }
+
+[features]
+default = []
+skia = []  # Enable for Phase 2

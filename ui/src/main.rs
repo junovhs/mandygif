@@ -49,12 +49,42 @@ async fn main() -> Result<()> {
         ui.set_state(AppState::Recording);
         ui.set_status_text("Recording...".into());
         
-        // Spawn recorder with stop channel
-        let ui_weak_inner = ui.as_weak();
+        // Create channel for progress updates
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        
+        // Spawn recorder
         let state_inner = state_clone.clone();
         tokio::spawn(async move {
-            if let Err(e) = run_recorder(ui_weak_inner, state_inner, region).await {
+            if let Err(e) = run_recorder(progress_tx, state_inner, region).await {
                 error!("Recorder failed: {:#}", e);
+            }
+        });
+        
+        // Spawn UI update task in main thread context
+        let ui_weak_update = ui.as_weak();
+        tokio::spawn(async move {
+            while let Some(event) = progress_rx.recv().await {
+                let ui_clone = ui_weak_update.clone();
+                slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_clone.upgrade() {
+                        match event {
+                            RecorderEvent::Progress { pts_ms } => {
+                                ui.set_recording_duration_ms(pts_ms as i32);
+                            }
+                            RecorderEvent::Stopped { duration_ms, path: _ } => {
+                                ui.set_state(AppState::Editing);
+                                ui.set_status_text("Ready to export".into());
+                                ui.set_trim_start_ms(0);
+                                ui.set_trim_end_ms(duration_ms as i32);
+                            }
+                            RecorderEvent::Error { hint, .. } => {
+                                ui.set_state(AppState::Idle);
+                                ui.set_status_text(format!("Error: {}", hint).into());
+                            }
+                            _ => {}
+                        }
+                    }
+                }).unwrap();
             }
         });
     });
@@ -117,7 +147,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_recorder(
-    ui: slint::Weak<AppWindow>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<RecorderEvent>,
     state: Arc<Mutex<AppStateData>>,
     region: Region,
 ) -> Result<()> {
@@ -160,8 +190,6 @@ async fn run_recorder(
     stdin.flush().await?;
     
     // Read events loop
-    eprintln!("UI: Starting event read loop");
-    let ui_clone = ui.clone();
     loop {
         tokio::select! {
             // Check for stop signal
@@ -179,51 +207,29 @@ async fn run_recorder(
             line = reader.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        eprintln!("UI: Got line from recorder: {:?}", line);
-                        
                         // Skip non-JSON lines (GStreamer debug, etc)
                         if !line.starts_with('{') {
-                            eprintln!("UI: Skipping non-JSON line");
                             continue;
                         }
                         
                         match parse_recorder_event(&line) {
-                            Ok(RecorderEvent::Started { .. }) => {
+                            Ok(event @ RecorderEvent::Started { .. }) => {
                                 info!("Recording started");
-                                if let Some(ui) = ui_clone.upgrade() {
-                                    ui.set_status_text("⏺ Recording...".into());
-                                }
+                                let _ = event_tx.send(event);
                             }
-                            Ok(RecorderEvent::Progress { pts_ms }) => {
-                                eprintln!("UI: Progress event parsed: {}ms", pts_ms);
-                                if let Some(ui) = ui_clone.upgrade() {
-                                    eprintln!("UI: Calling set_recording_duration_ms({})", pts_ms);
-                                    ui.set_recording_duration_ms(pts_ms as i32);
-                                    eprintln!("UI: Timer should now show: {}ms", pts_ms);
-                                } else {
-                                    eprintln!("UI: FAILED to upgrade ui weak reference!");
-                                }
+                            Ok(event @ RecorderEvent::Progress { .. }) => {
+                                let _ = event_tx.send(event);
                             }
                             Ok(RecorderEvent::Stopped { duration_ms, path }) => {
                                 info!("Recording stopped: {}ms, saved to {}", duration_ms, path.display());
-                                
-                                state.lock().unwrap().recording_path = Some(path);
+                                state.lock().unwrap().recording_path = Some(path.clone());
                                 state.lock().unwrap().recording_duration_ms = duration_ms;
-                                
-                                if let Some(ui) = ui_clone.upgrade() {
-                                    ui.set_state(AppState::Editing);
-                                    ui.set_status_text("Ready to export".into());
-                                    ui.set_trim_start_ms(0);
-                                    ui.set_trim_end_ms(duration_ms as i32);
-                                }
+                                let _ = event_tx.send(RecorderEvent::Stopped { duration_ms, path });
                                 break;
                             }
-                            Ok(RecorderEvent::Error { kind, hint }) => {
-                                error!("Recorder error: {:?} - {}", kind, hint);
-                                if let Some(ui) = ui_clone.upgrade() {
-                                    ui.set_state(AppState::Idle);
-                                    ui.set_status_text(format!("Error: {}", hint).into());
-                                }
+                            Ok(event @ RecorderEvent::Error { .. }) => {
+                                error!("Recorder error");
+                                let _ = event_tx.send(event);
                                 break;
                             }
                             Err(e) => {

@@ -18,20 +18,20 @@ struct Region {
 fn main() -> Result<()> {
     let selector = RegionSelector::new()?;
     
-    // Default to center of screen
-    selector.set_region_x(100.0);
-    selector.set_region_y(100.0);
-    selector.set_region_width(640.0);
-    selector.set_region_height(480.0);
+    // Default selection in center
+    selector.set_sel_x(460.0);
+    selector.set_sel_y(240.0);
+    selector.set_sel_width(1000.0);
+    selector.set_sel_height(600.0);
     
     let selector_weak = selector.as_weak();
     selector.on_confirm(move || {
         if let Some(s) = selector_weak.upgrade() {
             let region = Region {
-                x: s.get_region_x() as i32,
-                y: s.get_region_y() as i32,
-                width: s.get_region_width() as u32,
-                height: s.get_region_height() as u32,
+                x: s.get_sel_x() as i32,
+                y: s.get_sel_y() as i32,
+                width: s.get_sel_width() as u32,
+                height: s.get_sel_height() as u32,
             };
             
             // Output as JSON

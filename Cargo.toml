@@ -6,6 +6,7 @@ members = [
     "core/recorder-win",
     "core/encoder",
     "core/captions",
+    "core/region-selector",
     "ui",
 ]
 resolver = "2"

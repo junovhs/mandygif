@@ -1,0 +1,238 @@
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component RegionSelector inherits Window {
+    width: 1920px;
+    height: 1080px;
+    always-on-top: true;
+    no-frame: true;
+    
+    in-out property <length> region-x: 100px;
+    in-out property <length> region-y: 100px;
+    in-out property <length> region-width: 640px;
+    in-out property <length> region-height: 480px;
+    
+    callback confirm();
+    callback cancel();
+    
+    background: transparent;
+    
+    // Semi-transparent dark overlay
+    Rectangle {
+        background: #00000088;
+        
+        TouchArea {
+            // Click outside to cancel
+            clicked => {
+                root.cancel();
+            }
+        }
+    }
+    
+    // Selection rectangle
+    Rectangle {
+        x: region-x;
+        y: region-y;
+        width: region-width;
+        height: region-height;
+        border-color: #ff0000;
+        border-width: 3px;
+        background: transparent;
+        
+        // Main drag area (move entire box)
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            
+            property <length> drag-start-x;
+            property <length> drag-start-y;
+            property <length> start-region-x;
+            property <length> start-region-y;
+            
+            clicked => {
+                root.confirm();
+            }
+            
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.left) {
+                    if (event.kind == PointerEventKind.down) {
+                        self.drag-start-x = self.mouse-x;
+                        self.drag-start-y = self.mouse-y;
+                        self.start-region-x = region-x;
+                        self.start-region-y = region-y;
+                    }
+                }
+            }
+            
+            moved => {
+                if (self.pressed) {
+                    region-x = max(0px, min(root.width - region-width, 
+                        self.start-region-x + (self.mouse-x - self.drag-start-x)));
+                    region-y = max(0px, min(root.height - region-height, 
+                        self.start-region-y + (self.mouse-y - self.drag-start-y)));
+                }
+            }
+        }
+        
+        // Corner handle: top-left
+        Rectangle {
+            x: -8px;
+            y: -8px;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-color: #ff0000;
+            border-width: 2px;
+            border-radius: 8px;
+            
+            TouchArea {
+                property <length> drag-start-x;
+                property <length> drag-start-y;
+                property <length> start-region-x;
+                property <length> start-region-y;
+                property <length> start-region-width;
+                property <length> start-region-height;
+                
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        self.drag-start-x = self.mouse-x;
+                        self.drag-start-y = self.mouse-y;
+                        self.start-region-x = region-x;
+                        self.start-region-y = region-y;
+                        self.start-region-width = region-width;
+                        self.start-region-height = region-height;
+                    }
+                }
+                
+                moved => {
+                    if (self.pressed) {
+                        region-x = self.start-region-x + (self.mouse-x - self.drag-start-x);
+                        region-y = self.start-region-y + (self.mouse-y - self.drag-start-y);
+                        region-width = self.start-region-width - (self.mouse-x - self.drag-start-x);
+                        region-height = self.start-region-height - (self.mouse-y - self.drag-start-y);
+                    }
+                }
+            }
+        }
+        
+        // Corner handle: top-right
+        Rectangle {
+            x: parent.width - 8px;
+            y: -8px;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-color: #ff0000;
+            border-width: 2px;
+            border-radius: 8px;
+            
+            TouchArea {
+                property <length> drag-start-x;
+                property <length> drag-start-y;
+                property <length> start-region-y;
+                property <length> start-region-width;
+                property <length> start-region-height;
+                
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        self.drag-start-x = self.mouse-x;
+                        self.drag-start-y = self.mouse-y;
+                        self.start-region-y = region-y;
+                        self.start-region-width = region-width;
+                        self.start-region-height = region-height;
+                    }
+                }
+                
+                moved => {
+                    if (self.pressed) {
+                        region-y = self.start-region-y + (self.mouse-y - self.drag-start-y);
+                        region-width = self.start-region-width + (self.mouse-x - self.drag-start-x);
+                        region-height = self.start-region-height - (self.mouse-y - self.drag-start-y);
+                    }
+                }
+            }
+        }
+        
+        // Corner handle: bottom-left
+        Rectangle {
+            x: -8px;
+            y: parent.height - 8px;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-color: #ff0000;
+            border-width: 2px;
+            border-radius: 8px;
+            
+            TouchArea {
+                property <length> drag-start-x;
+                property <length> drag-start-y;
+                property <length> start-region-x;
+                property <length> start-region-width;
+                property <length> start-region-height;
+                
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        self.drag-start-x = self.mouse-x;
+                        self.drag-start-y = self.mouse-y;
+                        self.start-region-x = region-x;
+                        self.start-region-width = region-width;
+                        self.start-region-height = region-height;
+                    }
+                }
+                
+                moved => {
+                    if (self.pressed) {
+                        region-x = self.start-region-x + (self.mouse-x - self.drag-start-x);
+                        region-width = self.start-region-width - (self.mouse-x - self.drag-start-x);
+                        region-height = self.start-region-height + (self.mouse-y - self.drag-start-y);
+                    }
+                }
+            }
+        }
+        
+        // Corner handle: bottom-right
+        Rectangle {
+            x: parent.width - 8px;
+            y: parent.height - 8px;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-color: #ff0000;
+            border-width: 2px;
+            border-radius: 8px;
+            
+            TouchArea {
+                property <length> drag-start-x;
+                property <length> drag-start-y;
+                property <length> start-region-width;
+                property <length> start-region-height;
+                
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        self.drag-start-x = self.mouse-x;
+                        self.drag-start-y = self.mouse-y;
+                        self.start-region-width = region-width;
+                        self.start-region-height = region-height;
+                    }
+                }
+                
+                moved => {
+                    if (self.pressed) {
+                        region-width = self.start-region-width + (self.mouse-x - self.drag-start-x);
+                        region-height = self.start-region-height + (self.mouse-y - self.drag-start-y);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Instructions
+    Text {
+        y: 20px;
+        width: 100%;
+        text: "Drag to move/resize • Click inside to confirm • Click outside to cancel";
+        color: white;
+        font-size: 16px;
+        horizontal-alignment: center;
+    }
+}

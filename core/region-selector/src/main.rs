@@ -18,11 +18,11 @@ struct Region {
 fn main() -> Result<()> {
     let selector = RegionSelector::new()?;
     
-    // Default selection in center
-    selector.set_sel_x(460.0);
-    selector.set_sel_y(240.0);
-    selector.set_sel_width(1000.0);
-    selector.set_sel_height(600.0);
+    // Start at reasonable centered size
+    selector.set_sel_x(320.0);
+    selector.set_sel_y(180.0);
+    selector.set_sel_width(1280.0);
+    selector.set_sel_height(720.0);
     
     let selector_weak = selector.as_weak();
     selector.on_confirm(move || {

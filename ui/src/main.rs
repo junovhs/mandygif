@@ -1,6 +1,6 @@
 //! MandyGIF UI - Slint interface with process spawning for recorder/encoder
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use mandygif_protocol::*;
 use slint::ComponentHandle;
 use std::path::PathBuf;
@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tracing::{info, error, debug};
+
 
 slint::include_modules!();
 
@@ -137,12 +138,88 @@ async fn main() -> Result<()> {
         });
     });
 
-    // Region selector placeholder
-    ui.on_show_region_selector(|| {
-        info!("Region selector not yet implemented - using default region");
+    // Region selector - NOW IMPLEMENTED
+    let ui_weak = ui.as_weak();
+    ui.on_show_region_selector(move || {
+        let ui_weak_inner = ui_weak.clone();
+        tokio::spawn(async move {
+            if let Err(e) = spawn_region_selector(ui_weak_inner).await {
+                error!("Region selector failed: {:#}", e);
+            }
+        });
+    });
+
+    // Launch region selector immediately on startup
+    info!("Launching region selector on startup");
+    let ui_weak_startup = ui.as_weak();
+    tokio::spawn(async move {
+        if let Err(e) = spawn_region_selector(ui_weak_startup).await {
+            error!("Region selector startup failed: {:#}", e);
+            std::process::exit(1);
+        }
     });
 
     ui.run()?;
+    Ok(())
+}
+
+/// Spawn region selector binary, parse output, update UI
+async fn spawn_region_selector(ui_weak: slint::Weak<AppWindow>) -> Result<()> {
+    let region_bin = std::env::current_exe()?
+        .parent()
+        .context("No parent directory for binary")?
+        .join("region-selector");
+    
+    info!("Spawning region selector: {}", region_bin.display());
+    
+    let output = Command::new(&region_bin)
+        .output()
+        .await
+        .context("Failed to spawn region-selector binary")?;
+    
+    if !output.status.success() {
+        bail!("Region selector exited with non-zero status");
+    }
+    
+    let json = String::from_utf8_lossy(&output.stdout);
+    debug!("Region selector output: {}", json);
+    
+    // Parse region from JSON
+    #[derive(serde::Deserialize, Debug)]
+    struct RegionOutput {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    }
+    
+    let region: RegionOutput = serde_json::from_str(&json)
+        .context("Failed to parse region selector JSON output")?;
+    
+    info!("Selected region: {}x{} at {},{}", 
+        region.width, region.height, region.x, region.y);
+    
+    // Update UI on main thread (CRITICAL: must use invoke_from_event_loop)
+    slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_capture_region(Region {
+                x: region.x,
+                y: region.y,
+                width: region.width as i32,
+                height: region.height as i32,
+            });
+            ui.set_status_text(
+                format!("Region set: {}×{} at ({}, {})", 
+                    region.width, region.height, region.x, region.y).into()
+            );
+            
+            // Auto-start recording immediately after region selection
+            info!("Auto-starting recording after region selection");
+            ui.invoke_start_recording();
+        }
+    })
+    .context("Failed to invoke UI update from event loop")?;
+    
     Ok(())
 }
 

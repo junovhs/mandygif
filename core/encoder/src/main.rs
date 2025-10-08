@@ -6,8 +6,9 @@
 
 use anyhow::{Context, Result, bail};
 use mandygif_protocol::*;
+use mandygif_captions::build_filter_chain_expr;
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use tracing::{info, error, debug, warn};
 
@@ -143,14 +144,16 @@ async fn encode_gif(
     let palette_path = temp_dir.path().join("palette.png");
     
     let video_filter = build_video_filter(fps, scale_px, captions);
+    let start_s = ms_to_secs(trim.start_ms);
+    let dur_s = ms_to_secs(trim.end_ms.saturating_sub(trim.start_ms));
     
     // Step 1: Generate palette
     debug!("Generating palette for GIF");
     let mut palette_cmd = Command::new("ffmpeg");
     palette_cmd
+        .arg("-ss").arg(&start_s)
+        .arg("-t").arg(&dur_s)
         .arg("-i").arg(input)
-        .arg("-ss").arg(format!("{}ms", trim.start_ms))
-        .arg("-to").arg(format!("{}ms", trim.end_ms))
         .arg("-vf").arg(format!("{},palettegen", video_filter))
         .arg("-y")
         .arg(&palette_path)
@@ -166,16 +169,16 @@ async fn encode_gif(
     debug!("Encoding GIF with palette");
     let mut gif_cmd = Command::new("ffmpeg");
     gif_cmd
+        .arg("-ss").arg(&start_s)
+        .arg("-t").arg(&dur_s)
         .arg("-i").arg(input)
         .arg("-i").arg(&palette_path)
-        .arg("-ss").arg(format!("{}ms", trim.start_ms))
-        .arg("-to").arg(format!("{}ms", trim.end_ms))
         .arg("-lavfi").arg(format!("{} [x]; [x][1:v] paletteuse", video_filter));
     
     // Handle loop mode
     match loop_mode {
-        LoopMode::Once => gif_cmd.arg("-loop").arg("1"),
-        _ => gif_cmd.arg("-loop").arg("0"),
+        LoopMode::Once => { gif_cmd.arg("-loop").arg("-1"); },
+        _ => { gif_cmd.arg("-loop").arg("0"); },
     };
     
     gif_cmd
@@ -209,11 +212,14 @@ async fn encode_mp4(
     // Map quality (0.0-1.0) to CRF (51-18, lower is better)
     let crf = (51.0 - (quality * 33.0)).round() as u32;
     
+    let start_s = ms_to_secs(trim.start_ms);
+    let dur_s = ms_to_secs(trim.end_ms.saturating_sub(trim.start_ms));
+    
     let mut ffmpeg = Command::new("ffmpeg");
     ffmpeg
+        .arg("-ss").arg(&start_s)
+        .arg("-t").arg(&dur_s)
         .arg("-i").arg(input)
-        .arg("-ss").arg(format!("{}ms", trim.start_ms))
-        .arg("-to").arg(format!("{}ms", trim.end_ms))
         .arg("-vf").arg(build_video_filter(fps, scale_px, captions))
         .arg("-c:v").arg("libx264")
         .arg("-preset").arg("medium")
@@ -247,11 +253,14 @@ async fn encode_webp(
     captions: &[Caption],
     output: &Path,
 ) -> Result<()> {
+    let start_s = ms_to_secs(trim.start_ms);
+    let dur_s = ms_to_secs(trim.end_ms.saturating_sub(trim.start_ms));
+    
     let mut ffmpeg = Command::new("ffmpeg");
     ffmpeg
+        .arg("-ss").arg(&start_s)
+        .arg("-t").arg(&dur_s)
         .arg("-i").arg(input)
-        .arg("-ss").arg(format!("{}ms", trim.start_ms))
-        .arg("-to").arg(format!("{}ms", trim.end_ms))
         .arg("-vf").arg(build_video_filter(fps, scale_px, captions));
     
     if lossless {
@@ -286,10 +295,9 @@ fn build_video_filter(fps: u32, scale_px: Option<u32>, captions: &[Caption]) -> 
         filters.push(format!("scale={}:-1:flags=lanczos", width));
     }
     
-    // Add caption filters (Phase 1: drawtext)
+    // Add caption filters after scaling so expressions use final main_w/main_h
     if !captions.is_empty() {
-        warn!("Caption rendering not yet implemented - captions will be ignored");
-        // TODO: Use mandygif-captions to generate drawtext filters
+        filters.push(build_filter_chain_expr(captions));
     }
     
     filters.join(",")
@@ -300,4 +308,10 @@ fn write_event(stdout: &mut io::Stdout, event: &EncoderEvent) -> Result<()> {
     stdout.write_all(json.as_bytes()).context("Failed to write to stdout")?;
     stdout.flush().context("Failed to flush stdout")?;
     Ok(())
+}
+
+/// Convert milliseconds to seconds as decimal string for ffmpeg
+#[inline]
+fn ms_to_secs(ms: u64) -> String {
+    format!("{:.3}", (ms as f64) / 1000.0)
 }

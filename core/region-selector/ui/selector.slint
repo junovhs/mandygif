@@ -1,5 +1,5 @@
 export component RegionSelector inherits Window {
-    width: 3840px;  // Large enough for 4K
+    width: 3840px;
     height: 2160px;
     always-on-top: true;
     no-frame: true;
@@ -8,6 +8,8 @@ export component RegionSelector inherits Window {
     in-out property <length> sel-y: 0px;
     in-out property <length> sel-width: 3840px;
     in-out property <length> sel-height: 2160px;
+    in-out property <bool> show-resolution-menu: false;
+    in-out property <string> locked-aspect: "";  // e.g. "16:9", "4:3", ""=unlocked
     
     callback confirm();
     callback cancel();
@@ -25,9 +27,9 @@ export component RegionSelector inherits Window {
         Rectangle {
             width: parent.width;
             height: parent.height;
-            background: #00ffff20;
-            border-width: 2px;
-            border-color: #00ffff;
+            background: #BBF4511A;
+            border-width: 1px;
+            border-color: #69F451;
         }
         
         // Top bar
@@ -36,17 +38,25 @@ export component RegionSelector inherits Window {
             width: parent.width;
             height: 40px;
             background: #1a1a1a;
+            border-top-left-radius: 10px;
+            border-top-right-radius: 10px;
             
             HorizontalLayout {
                 padding: 8px;
                 spacing: 8px;
                 
-                Text {
-                    text: round(sel-width / 1px) + " × " + round(sel-height / 1px);
-                    color: white;
-                    font-size: 14px;
-                    vertical-alignment: center;
+                // Clickable dimensions text
+                TouchArea {
                     horizontal-stretch: 1;
+                    
+                    Text {
+                        text: round(sel-width / 1px) + " × " + round(sel-height / 1px);
+                        color: white;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+                    
+                    clicked => { root.show-resolution-menu = !root.show-resolution-menu; }
                 }
                 
                 Rectangle {
@@ -90,12 +100,139 @@ export component RegionSelector inherits Window {
             }
         }
         
+        // Resolution menu popup
+        if show-resolution-menu: Rectangle {
+            y: -40px - 220px;
+            x: 0px;
+            width: 200px;
+            height: 220px;
+            background: #2a2a2a;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #69F451;
+            
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+                
+                Text { text: "Resolutions"; color: #00ffff; font-size: 12px; font-weight: 700; }
+                
+                Rectangle {
+                    height: 24px;
+                    background: touch1.has-hover ? #3a3a3a : transparent;
+                    Text { text: "1280 × 720"; color: white; font-size: 12px; vertical-alignment: center; }
+                    touch1 := TouchArea {
+                        clicked => {
+                            sel-width = 1280px;
+                            sel-height = 720px;
+                            show-resolution-menu = false;
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    height: 24px;
+                    background: touch2.has-hover ? #3a3a3a : transparent;
+                    Text { text: "1920 × 1080"; color: white; font-size: 12px; vertical-alignment: center; }
+                    touch2 := TouchArea {
+                        clicked => {
+                            sel-width = 1920px;
+                            sel-height = 1080px;
+                            show-resolution-menu = false;
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    height: 24px;
+                    background: touch3.has-hover ? #3a3a3a : transparent;
+                    Text { text: "2560 × 1440"; color: white; font-size: 12px; vertical-alignment: center; }
+                    touch3 := TouchArea {
+                        clicked => {
+                            sel-width = 2560px;
+                            sel-height = 1440px;
+                            show-resolution-menu = false;
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    height: 24px;
+                    background: touch4.has-hover ? #3a3a3a : transparent;
+                    Text { text: "Full Screen"; color: white; font-size: 12px; vertical-alignment: center; }
+                    touch4 := TouchArea {
+                        clicked => {
+                            sel-x = 0px;
+                            sel-y = 0px;
+                            sel-width = 3840px;
+                            sel-height = 2160px;
+                            show-resolution-menu = false;
+                        }
+                    }
+                }
+                
+                Rectangle { height: 1px; background: #444; }
+                
+                Text { text: "Aspect Ratios"; color: #00ffff; font-size: 12px; font-weight: 700; }
+                
+                Rectangle {
+                    height: 24px;
+                    background: touch5.has-hover ? #3a3a3a : (locked-aspect == "16:9" ? #0a4a4a : transparent);
+                    Text { text: "16:9 " + (locked-aspect == "16:9" ? "🔒" : ""); color: white; font-size: 12px; vertical-alignment: center; }
+                    touch5 := TouchArea {
+                        clicked => {
+                            locked-aspect = locked-aspect == "16:9" ? "" : "16:9";
+                            show-resolution-menu = false;
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    height: 24px;
+                    background: touch6.has-hover ? #3a3a3a : (locked-aspect == "4:3" ? #0a4a4a : transparent);
+                    Text { text: "4:3 " + (locked-aspect == "4:3" ? "🔒" : ""); color: white; font-size: 12px; vertical-alignment: center; }
+                    touch6 := TouchArea {
+                        clicked => {
+                            locked-aspect = locked-aspect == "4:3" ? "" : "4:3";
+                            show-resolution-menu = false;
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    height: 24px;
+                    background: touch7.has-hover ? #3a3a3a : (locked-aspect == "1:1" ? #0a4a4a : transparent);
+                    Text { text: "1:1 " + (locked-aspect == "1:1" ? "🔒" : ""); color: white; font-size: 12px; vertical-alignment: center; }
+                    touch7 := TouchArea {
+                        clicked => {
+                            locked-aspect = locked-aspect == "1:1" ? "" : "1:1";
+                            show-resolution-menu = false;
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    height: 24px;
+                    background: touch8.has-hover ? #3a3a3a : (locked-aspect == "" ? #0a4a4a : transparent);
+                    Text { text: "Unlocked"; color: white; font-size: 12px; vertical-alignment: center; }
+                    touch8 := TouchArea {
+                        clicked => {
+                            locked-aspect = "";
+                            show-resolution-menu = false;
+                        }
+                    }
+                }
+            }
+        }
+        
         // Bottom bar
         Rectangle {
             y: parent.height;
             width: parent.width;
             height: 50px;
             background: #1a1a1a;
+            border-bottom-left-radius: 10px;
+            border-bottom-right-radius: 10px;
             
             HorizontalLayout {
                 padding: 10px;
@@ -124,39 +261,61 @@ export component RegionSelector inherits Window {
             }
         }
         
-        // Bottom-right resize handle on the bottom bar
+        // Bottom-right resize handle
         Rectangle {
-            x: parent.width - 25px;
+            x: parent.width - 30px;
             y: parent.height + 10px;
-            width: 20px;
+            width: 24px;
             height: 30px;
             
-            // Line 1
-            Rectangle { x: 15px; y: 5px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 14px; y: 6px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 13px; y: 7px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 12px; y: 8px; width: 2px; height: 2px; background: #888; }
-            
-            // Line 2
-            Rectangle { x: 11px; y: 11px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 10px; y: 12px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 9px; y: 13px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 8px; y: 14px; width: 2px; height: 2px; background: #888; }
-            
-            // Line 3
-            Rectangle { x: 7px; y: 17px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 6px; y: 18px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 5px; y: 19px; width: 2px; height: 2px; background: #888; }
-            Rectangle { x: 4px; y: 20px; width: 2px; height: 2px; background: #888; }
+            Image {
+                source: @image-url("assets/6dots.svg");
+                width: 48px;
+                height: 96px;
+                x: -12px;
+                y: -33px;
+                image-fit: contain;
+                colorize: #888;
+            }
             
             TouchArea {
                 width: parent.width;
                 height: parent.height;
                 
+                property <length> drag-start-x;
+                property <length> drag-start-y;
+                property <length> start-width;
+                property <length> start-height;
+                
+                pointer-event(event) => {
+                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                        self.drag-start-x = self.mouse-x;
+                        self.drag-start-y = self.mouse-y;
+                        self.start-width = sel-width;
+                        self.start-height = sel-height;
+                    }
+                }
+                
                 moved => {
                     if (self.pressed) {
-                        sel-width = max(200px, sel-width + self.mouse-x);
-                        sel-height = max(100px, sel-height + self.mouse-y);
+                        // Calculate delta from initial press
+                        self.start-width = max(200px, self.start-width + (self.mouse-x - self.drag-start-x));
+                        self.start-height = max(100px, self.start-height + (self.mouse-y - self.drag-start-y));
+                        
+                        // Apply aspect ratio lock if active
+                        if (locked-aspect == "16:9") {
+                            sel-width = self.start-width;
+                            sel-height = sel-width * 9 / 16;
+                        } else if (locked-aspect == "4:3") {
+                            sel-width = self.start-width;
+                            sel-height = sel-width * 3 / 4;
+                        } else if (locked-aspect == "1:1") {
+                            sel-width = self.start-width;
+                            sel-height = sel-width;
+                        } else {
+                            sel-width = self.start-width;
+                            sel-height = self.start-height;
+                        }
                     }
                 }
             }

@@ -1,22 +1,21 @@
-//! MandyGIF UI - Slint interface with process spawning for recorder/encoder
+//! MandyGIF - Unified overlay interface with integrated controls
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use mandygif_protocol::*;
 use slint::ComponentHandle;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::oneshot;
+use tokio::sync::mpsc;
 use tracing::{info, error, debug};
-
 
 slint::include_modules!();
 
 struct AppStateData {
     recording_path: Option<PathBuf>,
     recording_duration_ms: u64,
-    stop_tx: Option<oneshot::Sender<()>>,
+    stop_tx: Option<mpsc::UnboundedSender<()>>,
 }
 
 #[tokio::main]
@@ -28,9 +27,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("MandyGIF UI starting");
+    info!("MandyGIF starting - unified overlay mode");
 
-    let ui = AppWindow::new()?;
+    let ui = UnifiedOverlay::new()?;
     let state = Arc::new(Mutex::new(AppStateData {
         recording_path: None,
         recording_duration_ms: 0,
@@ -42,16 +41,28 @@ async fn main() -> Result<()> {
     let state_clone = state.clone();
     ui.on_start_recording(move || {
         let ui = ui_weak.unwrap();
-        let region = ui.get_capture_region();
+        
+        // Check if already recording
+        if state_clone.lock().unwrap().stop_tx.is_some() {
+            info!("Already recording, ignoring start request");
+            return;
+        }
+        
+        let region = CaptureRegion {
+            x: ui.get_sel_x() as i32,
+            y: ui.get_sel_y() as i32,
+            width: ui.get_sel_width() as u32,
+            height: ui.get_sel_height() as u32,
+        };
         
         info!("Starting recording: {}x{} at {},{}", 
             region.width, region.height, region.x, region.y);
         
-        ui.set_state(AppState::Recording);
-        ui.set_status_text("Recording...".into());
+        ui.set_recording(true);
+        ui.set_recording_duration_ms(0);
         
         // Create channel for progress updates
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
         
         // Spawn recorder
         let state_inner = state_clone.clone();
@@ -61,26 +72,30 @@ async fn main() -> Result<()> {
             }
         });
         
-        // Spawn UI update task in main thread context
+        // Spawn UI update task
         let ui_weak_update = ui.as_weak();
+        let state_for_update = state_clone.clone();
         tokio::spawn(async move {
             while let Some(event) = progress_rx.recv().await {
                 let ui_clone = ui_weak_update.clone();
+                let state_clone = state_for_update.clone();
                 slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_clone.upgrade() {
                         match event {
                             RecorderEvent::Progress { pts_ms } => {
                                 ui.set_recording_duration_ms(pts_ms as i32);
                             }
-                            RecorderEvent::Stopped { duration_ms, path: _ } => {
-                                ui.set_state(AppState::Editing);
-                                ui.set_status_text("Ready to export".into());
-                                ui.set_trim_start_ms(0);
-                                ui.set_trim_end_ms(duration_ms as i32);
+                            RecorderEvent::Stopped { duration_ms, .. } => {
+                                ui.set_recording(false);
+                                ui.set_recording_duration_ms(duration_ms as i32);
+                                // Clear stop channel since recording is done
+                                state_clone.lock().unwrap().stop_tx = None;
                             }
                             RecorderEvent::Error { hint, .. } => {
-                                ui.set_state(AppState::Idle);
-                                ui.set_status_text(format!("Error: {}", hint).into());
+                                ui.set_recording(false);
+                                error!("Recording error: {}", hint);
+                                // Clear stop channel since recording failed
+                                state_clone.lock().unwrap().stop_tx = None;
                             }
                             _ => {}
                         }
@@ -91,15 +106,12 @@ async fn main() -> Result<()> {
     });
 
     // Stop recording callback
-    let ui_weak = ui.as_weak();
     let state_clone = state.clone();
     ui.on_stop_recording(move || {
-        let ui = ui_weak.unwrap();
         info!("Stop recording requested");
-        ui.set_status_text("Stopping...".into());
         
         // Send stop signal via channel
-        if let Some(tx) = state_clone.lock().unwrap().stop_tx.take() {
+        if let Some(tx) = state_clone.lock().unwrap().stop_tx.as_ref() {
             let _ = tx.send(());
         }
     });
@@ -116,127 +128,47 @@ async fn main() -> Result<()> {
             return;
         }
         
-        ui.set_state(AppState::Exporting);
-        ui.set_status_text("Exporting...".into());
-        
         let format = ui.get_export_format();
         let fps = ui.get_export_fps();
-        let trim_start = ui.get_trim_start_ms();
-        let trim_end = ui.get_trim_end_ms();
         let scale = ui.get_scale_width();
+        let duration_ms = ui.get_recording_duration_ms() as u64;
         
-        info!("Exporting: format={}, fps={}, trim={}..{}, scale={}", 
-            format, fps, trim_start, trim_end, scale);
+        info!("Exporting: format={}, fps={}, scale={}", format, fps, scale);
         
-        let ui_weak_inner = ui.as_weak();
         let input = recording_path.unwrap();
         tokio::spawn(async move {
-            if let Err(e) = run_encoder(ui_weak_inner, input, format.to_string(), 
-                fps, trim_start as u64, trim_end as u64, scale).await {
+            if let Err(e) = run_encoder(
+                input, 
+                format.to_string(), 
+                fps, 
+                0, 
+                duration_ms, 
+                scale
+            ).await {
                 error!("Encoder failed: {:#}", e);
             }
         });
     });
 
-    // Region selector - NOW IMPLEMENTED
-    let ui_weak = ui.as_weak();
-    ui.on_show_region_selector(move || {
-        let ui_weak_inner = ui_weak.clone();
-        tokio::spawn(async move {
-            if let Err(e) = spawn_region_selector(ui_weak_inner).await {
-                error!("Region selector failed: {:#}", e);
-            }
-        });
-    });
-
-    // Launch region selector immediately on startup
-    info!("Launching region selector on startup");
-    let ui_weak_startup = ui.as_weak();
-    tokio::spawn(async move {
-        if let Err(e) = spawn_region_selector(ui_weak_startup).await {
-            error!("Region selector startup failed: {:#}", e);
-            std::process::exit(1);
-        }
+    // Cancel callback - quit the app
+    ui.on_cancel(|| {
+        info!("User canceled - exiting");
+        slint::quit_event_loop().ok();
     });
 
     ui.run()?;
     Ok(())
 }
 
-/// Spawn region selector binary, parse output, update UI
-async fn spawn_region_selector(ui_weak: slint::Weak<AppWindow>) -> Result<()> {
-    let region_bin = std::env::current_exe()?
-        .parent()
-        .context("No parent directory for binary")?
-        .join("region-selector");
-    
-    info!("Spawning region selector: {}", region_bin.display());
-    
-    let output = Command::new(&region_bin)
-        .output()
-        .await
-        .context("Failed to spawn region-selector binary")?;
-    
-    if !output.status.success() {
-        bail!("Region selector exited with non-zero status");
-    }
-    
-    let json = String::from_utf8_lossy(&output.stdout);
-    debug!("Region selector output: {}", json);
-    
-    // Parse region from JSON
-    #[derive(serde::Deserialize, Debug)]
-    struct RegionOutput {
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    }
-    
-    let region: RegionOutput = serde_json::from_str(&json)
-        .context("Failed to parse region selector JSON output")?;
-    
-    info!("Selected region: {}x{} at {},{}", 
-        region.width, region.height, region.x, region.y);
-    
-    // Update UI on main thread (CRITICAL: must use invoke_from_event_loop)
-    slint::invoke_from_event_loop(move || {
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_capture_region(Region {
-                x: region.x,
-                y: region.y,
-                width: region.width as i32,
-                height: region.height as i32,
-            });
-            ui.set_status_text(
-                format!("Region set: {}×{} at ({}, {})", 
-                    region.width, region.height, region.x, region.y).into()
-            );
-            
-            // Auto-start recording immediately after region selection
-            info!("Auto-starting recording after region selection");
-            ui.invoke_start_recording();
-        }
-    })
-    .context("Failed to invoke UI update from event loop")?;
-    
-    Ok(())
-}
-
 async fn run_recorder(
-    event_tx: tokio::sync::mpsc::UnboundedSender<RecorderEvent>,
+    event_tx: mpsc::UnboundedSender<RecorderEvent>,
     state: Arc<Mutex<AppStateData>>,
-    region: Region,
+    region: CaptureRegion,
 ) -> Result<()> {
     let output_path = PathBuf::from("/tmp/mandygif_recording.mp4");
     
     let cmd = RecorderCommand::Start {
-        region: CaptureRegion {
-            x: region.x,
-            y: region.y,
-            width: region.width as u32,
-            height: region.height as u32,
-        },
+        region,
         fps: 30,
         cursor: false,
         out: output_path.clone(),
@@ -257,8 +189,8 @@ async fn run_recorder(
     let stdout = child.stdout.take().unwrap();
     let mut reader = BufReader::new(stdout).lines();
     
-    // Create stop channel
-    let (stop_tx, mut stop_rx) = oneshot::channel();
+    // Create stop channel using mpsc (unbounded) instead of oneshot
+    let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     state.lock().unwrap().stop_tx = Some(stop_tx);
     
     // Send start command
@@ -270,38 +202,40 @@ async fn run_recorder(
     loop {
         tokio::select! {
             // Check for stop signal
-            _ = &mut stop_rx => {
-                info!("Stop signal received, sending stop command");
+            _ = stop_rx.recv() => {
+                info!("Stop signal received, sending stop command to recorder");
                 let stop_cmd = RecorderCommand::Stop;
                 let stop_json = to_jsonl(&stop_cmd)?;
                 stdin.write_all(stop_json.as_bytes()).await?;
                 stdin.flush().await?;
-                drop(stdin); // Close stdin to signal we're done
-                break;
+                // Continue reading to get the stopped event
             }
             
             // Read recorder events
             line = reader.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        // Skip non-JSON lines (GStreamer debug, etc)
                         if !line.starts_with('{') {
                             continue;
                         }
                         
                         match parse_recorder_event(&line) {
-                            Ok(event @ RecorderEvent::Started { .. }) => {
+                            Ok(RecorderEvent::Started { .. }) => {
                                 info!("Recording started");
-                                let _ = event_tx.send(event);
+                                let _ = event_tx.send(RecorderEvent::Started { pts_ms: 0 });
                             }
-                            Ok(event @ RecorderEvent::Progress { .. }) => {
-                                let _ = event_tx.send(event);
+                            Ok(RecorderEvent::Progress { pts_ms }) => {
+                                let _ = event_tx.send(RecorderEvent::Progress { pts_ms });
                             }
                             Ok(RecorderEvent::Stopped { duration_ms, path }) => {
-                                info!("Recording stopped: {}ms, saved to {}", duration_ms, path.display());
+                                info!("Recording stopped: {}ms, saved to {}", 
+                                    duration_ms, path.display());
                                 state.lock().unwrap().recording_path = Some(path.clone());
                                 state.lock().unwrap().recording_duration_ms = duration_ms;
-                                let _ = event_tx.send(RecorderEvent::Stopped { duration_ms, path });
+                                let _ = event_tx.send(RecorderEvent::Stopped { 
+                                    duration_ms, 
+                                    path 
+                                });
                                 break;
                             }
                             Ok(event @ RecorderEvent::Error { .. }) => {
@@ -314,7 +248,7 @@ async fn run_recorder(
                             }
                         }
                     }
-                    Ok(None) => break, // EOF
+                    Ok(None) => break,
                     Err(e) => {
                         error!("Error reading from recorder: {}", e);
                         break;
@@ -329,7 +263,6 @@ async fn run_recorder(
 }
 
 async fn run_encoder(
-    ui: slint::Weak<AppWindow>,
     input: PathBuf,
     format: String,
     fps: i32,
@@ -404,19 +337,10 @@ async fn run_encoder(
             }
             Ok(EncoderEvent::Done { path }) => {
                 info!("Export complete: {}", path.display());
-                
-                if let Some(ui) = ui.upgrade() {
-                    ui.set_state(AppState::Idle);
-                    ui.set_status_text(format!("Exported to {}", path.display()).into());
-                }
                 break;
             }
             Ok(EncoderEvent::Error { kind, hint }) => {
                 error!("Encoder error: {:?} - {}", kind, hint);
-                if let Some(ui) = ui.upgrade() {
-                    ui.set_state(AppState::Editing);
-                    ui.set_status_text(format!("Export failed: {}", hint).into());
-                }
                 break;
             }
             Err(e) => {

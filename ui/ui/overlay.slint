@@ -1,0 +1,382 @@
+import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component UnifiedOverlay inherits Window {
+    title: "MandyGIF";
+    width: 3840px;
+    height: 2160px;
+    background: transparent;
+    always-on-top: true;
+    no-frame: true;
+
+    // State
+    in-out property <bool> recording: false;
+    in-out property <int> recording-duration-ms: 0;
+    in-out property <float> sel-x: 320;
+    in-out property <float> sel-y: 180;
+    in-out property <float> sel-width: 1280;
+    in-out property <float> sel-height: 720;
+    in-out property <string> locked-aspect: "";  // "", "16:9", "4:3", "1:1"
+    
+    // Export settings
+    in-out property <string> export-format: "gif";
+    in-out property <int> export-fps: 15;
+    in-out property <int> scale-width: 480;
+    
+    // Callbacks
+    callback start-recording();
+    callback stop-recording();
+    callback start-export();
+    callback cancel();
+
+    // Selection box with green overlay
+    Rectangle {
+        x: root.sel-x * 1px;
+        y: root.sel-y * 1px;
+        width: root.sel-width * 1px;
+        height: root.sel-height * 1px;
+        background: #00ff0020;
+        border-color: #00ff00;
+        border-width: 2px;
+    }
+
+    // Top bar - attached to selection
+    Rectangle {
+        x: root.sel-x * 1px;
+        y: root.sel-y * 1px - 40px;
+        width: root.sel-width * 1px;
+        height: 40px;
+        background: #2a2a2a;
+        border-radius: 8px;
+        
+        HorizontalBox {
+            padding: 10px;
+            spacing: 10px;
+            alignment: space-between;
+            
+            // Dimensions display
+            Text {
+                text: round(root.sel-width) + " × " + round(root.sel-height);
+                color: #ffffff;
+                font-size: 16px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            
+            // Recording status
+            if root.recording: HorizontalBox {
+                spacing: 8px;
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    background: #ff0000;
+                    border-radius: 5px;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: Math.floor(root.recording-duration-ms / 1000) + "s";
+                    color: #ff0000;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                }
+            }
+            
+            // Close button
+            Rectangle {
+                width: 30px;
+                height: 30px;
+                background: close-ta.has-hover ? #ff4444 : transparent;
+                border-radius: 6px;
+                
+                Text {
+                    text: "✕";
+                    color: #ffffff;
+                    font-size: 20px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                
+                close-ta := TouchArea {
+                    clicked => { root.cancel(); }
+                }
+            }
+        }
+        
+        // Make top bar draggable
+        drag-area := TouchArea {
+            moved => {
+                if (self.enabled && self.pressed) {
+                    root.sel-x = max(0, min(3840 - root.sel-width, 
+                        root.sel-x + (self.mouse-x - self.pressed-x) / 1px));
+                    root.sel-y = max(50, min(2160 - root.sel-height - 60, 
+                        root.sel-y + (self.mouse-y - self.pressed-y) / 1px));
+                }
+            }
+        }
+    }
+
+    // Bottom control bar - attached to selection
+    Rectangle {
+        x: root.sel-x * 1px;
+        y: root.sel-y * 1px + root.sel-height * 1px;
+        width: root.sel-width * 1px;
+        height: 50px;
+        background: #2a2a2a;
+        border-radius: 8px;
+        
+        HorizontalBox {
+            padding: 10px;
+            spacing: 15px;
+            alignment: space-between;
+            
+            // Left side - Record/Stop/Export buttons
+            HorizontalBox {
+                spacing: 10px;
+                
+                if !root.recording && root.recording-duration-ms == 0: Rectangle {
+                    width: 100px;
+                    height: 30px;
+                    background: rec-btn.has-hover ? #00cc00 : #00ff00;
+                    border-radius: 15px;
+                    
+                    Text {
+                        text: "REC";
+                        color: #000000;
+                        font-size: 14px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    rec-btn := TouchArea {
+                        clicked => { root.start-recording(); }
+                    }
+                }
+                
+                if root.recording: Rectangle {
+                    width: 100px;
+                    height: 30px;
+                    background: stop-btn.has-hover ? #cc0000 : #ff0000;
+                    border-radius: 15px;
+                    
+                    Text {
+                        text: "STOP";
+                        color: #ffffff;
+                        font-size: 14px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    stop-btn := TouchArea {
+                        clicked => { root.stop-recording(); }
+                    }
+                }
+                
+                if !root.recording && root.recording-duration-ms > 0: Rectangle {
+                    width: 100px;
+                    height: 30px;
+                    background: export-btn.has-hover ? #0088cc : #00aaff;
+                    border-radius: 15px;
+                    
+                    Text {
+                        text: "Export";
+                        color: #ffffff;
+                        font-size: 14px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    export-btn := TouchArea {
+                        clicked => { root.start-export(); }
+                    }
+                }
+                
+                // Format selector (when we have a recording)
+                if !root.recording && root.recording-duration-ms > 0: HorizontalBox {
+                    spacing: 5px;
+                    
+                    for format in ["gif", "mp4", "webp"]: Rectangle {
+                        width: 45px;
+                        height: 25px;
+                        background: (root.export-format == format) ? #00ff00 : #444444;
+                        border-radius: 4px;
+                        
+                        Text {
+                            text: format;
+                            color: (root.export-format == format) ? #000000 : #888888;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        
+                        TouchArea {
+                            clicked => { root.export-format = format; }
+                        }
+                    }
+                }
+            }
+            
+            // Center - Aspect ratio buttons
+            HorizontalBox {
+                spacing: 8px;
+                
+                Rectangle {
+                    property <bool> is-active: root.locked-aspect == "16:9";
+                    width: 50px;
+                    height: 25px;
+                    background: is-active ? #00ff00 : (ar169-ta.has-hover ? #444444 : #333333);
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: is-active ? #00ff00 : #555555;
+                    
+                    Text {
+                        text: "16:9";
+                        color: parent.is-active ? #000000 : (ar169-ta.has-hover ? #ffffff : #aaaaaa);
+                        font-size: 11px;
+                        font-weight: parent.is-active ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    ar169-ta := TouchArea {
+                        clicked => {
+                            if (root.locked-aspect == "16:9") {
+                                root.locked-aspect = "";
+                            } else {
+                                root.locked-aspect = "16:9";
+                                // Snap to 16:9
+                                if (abs(root.sel-width / 16 * 9 - root.sel-height) < 
+                                    abs(root.sel-height / 9 * 16 - root.sel-width)) {
+                                    root.sel-height = round(root.sel-width / 16 * 9);
+                                } else {
+                                    root.sel-width = round(root.sel-height / 9 * 16);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    property <bool> is-active: root.locked-aspect == "4:3";
+                    width: 50px;
+                    height: 25px;
+                    background: is-active ? #00ff00 : (ar43-ta.has-hover ? #444444 : #333333);
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: is-active ? #00ff00 : #555555;
+                    
+                    Text {
+                        text: "4:3";
+                        color: parent.is-active ? #000000 : (ar43-ta.has-hover ? #ffffff : #aaaaaa);
+                        font-size: 11px;
+                        font-weight: parent.is-active ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    ar43-ta := TouchArea {
+                        clicked => {
+                            if (root.locked-aspect == "4:3") {
+                                root.locked-aspect = "";
+                            } else {
+                                root.locked-aspect = "4:3";
+                                // Snap to 4:3
+                                if (abs(root.sel-width / 4 * 3 - root.sel-height) < 
+                                    abs(root.sel-height / 3 * 4 - root.sel-width)) {
+                                    root.sel-height = round(root.sel-width / 4 * 3);
+                                } else {
+                                    root.sel-width = round(root.sel-height / 3 * 4);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    property <bool> is-active: root.locked-aspect == "1:1";
+                    width: 50px;
+                    height: 25px;
+                    background: is-active ? #00ff00 : (ar11-ta.has-hover ? #444444 : #333333);
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: is-active ? #00ff00 : #555555;
+                    
+                    Text {
+                        text: "1:1";
+                        color: parent.is-active ? #000000 : (ar11-ta.has-hover ? #ffffff : #aaaaaa);
+                        font-size: 11px;
+                        font-weight: parent.is-active ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    ar11-ta := TouchArea {
+                        clicked => {
+                            if (root.locked-aspect == "1:1") {
+                                root.locked-aspect = "";
+                            } else {
+                                root.locked-aspect = "1:1";
+                                // Snap to 1:1
+                                if (root.sel-width < root.sel-height) {
+                                    root.sel-height = root.sel-width;
+                                } else {
+                                    root.sel-width = root.sel-height;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Right side - Resize handle
+            Rectangle {
+                width: 30px;
+                height: 30px;
+                
+                Image {
+                    source: @image-url("../assets/6dots.svg");
+                    width: 24px;
+                    height: 24px;
+                    x: 3px;
+                    y: 3px;
+                    colorize: #666666;
+                }
+                
+                resize-area := TouchArea {
+                    mouse-cursor: MouseCursor.nwse-resize;
+                    moved => {
+                        if (self.enabled && self.pressed) {
+                            if (root.locked-aspect == "") {
+                                // Free resize
+                                root.sel-width = max(200, min(3840 - root.sel-x,
+                                    root.sel-width + (self.mouse-x - self.pressed-x) / 1px));
+                                root.sel-height = max(100, min(2160 - root.sel-y - 50,
+                                    root.sel-height + (self.mouse-y - self.pressed-y) / 1px));
+                            } else if (root.locked-aspect == "16:9") {
+                                // Locked to 16:9
+                                root.sel-width = max(320, min(3840 - root.sel-x,
+                                    root.sel-width + (self.mouse-x - self.pressed-x) / 1px));
+                                root.sel-height = round(root.sel-width / 16 * 9);
+                            } else if (root.locked-aspect == "4:3") {
+                                // Locked to 4:3
+                                root.sel-width = max(200, min(3840 - root.sel-x,
+                                    root.sel-width + (self.mouse-x - self.pressed-x) / 1px));
+                                root.sel-height = round(root.sel-width / 4 * 3);
+                            } else if (root.locked-aspect == "1:1") {
+                                // Locked to 1:1
+                                root.sel-width = max(100, min(
+                                    min(3840 - root.sel-x, 2160 - root.sel-y - 50),
+                                    root.sel-width + max(
+                                        (self.mouse-x - self.pressed-x) / 1px,
+                                        (self.mouse-y - self.pressed-y) / 1px)));
+                                root.sel-height = root.sel-width;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

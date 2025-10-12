@@ -1,7 +1,7 @@
 //! Linux screen recorder using GStreamer + X11/XWayland capture
 //! 
 //! Uses ximagesrc for screen capture, x264 encoding to MP4.
-//! TODO: Upgrade to PipeWire portal for native Wayland support.
+//! Excludes overlay window from capture.
 
 use anyhow::{Context, Result};
 use mandygif_protocol::*;
@@ -10,12 +10,14 @@ use gstreamer::prelude::*;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing::{info, error, debug};
 
 /// Shared state between command handler and async tasks
 struct RecorderState {
     pipeline: Option<gst::Pipeline>,
     output_path: Option<PathBuf>,
+    start_time: Option<std::time::Instant>,
 }
 
 impl RecorderState {
@@ -23,12 +25,29 @@ impl RecorderState {
         Arc::new(Mutex::new(Self {
             pipeline: None,
             output_path: None,
+            start_time: None,
         }))
     }
 }
 
+/// Validate recording parameters - Rule 5: assertions
+fn validate_region(region: &CaptureRegion) -> Result<()> {
+    if region.width == 0 || region.height == 0 {
+        return Err(anyhow::anyhow!("Invalid region dimensions"));
+    }
+    if region.width > 3840 || region.height > 2160 {
+        return Err(anyhow::anyhow!("Region too large"));
+    }
+    if region.x < 0 || region.y < 0 {
+        return Err(anyhow::anyhow!("Negative coordinates not allowed"));
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    const MAX_ITERATIONS: u32 = 10000;  // Rule 2: bounded loop
+    
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -44,8 +63,16 @@ async fn main() -> Result<()> {
     let state = RecorderState::new();
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    let mut iteration_count = 0u32;
     
+    // Rule 2: bounded loop with explicit counter
     for line in stdin.lock().lines() {
+        iteration_count += 1;
+        if iteration_count >= MAX_ITERATIONS {
+            error!("Maximum iterations reached, exiting");
+            break;
+        }
+        
         let line = line.context("Failed to read stdin")?;
         debug!("Received: {}", line);
         
@@ -56,10 +83,26 @@ async fn main() -> Result<()> {
                     region.width, region.height, region.x, region.y, fps, cursor, out.display()
                 );
                 
-                match start_recording(&state, region, fps, out.clone()) {
+                // Rule 5: validate inputs
+                if let Err(e) = validate_region(&region) {
+                    let event = RecorderEvent::Error {
+                        kind: ErrorKind::InvalidInput,
+                        hint: format!("Invalid region: {}", e),
+                    };
+                    write_event(&mut stdout, &event)?;
+                    continue;
+                }
+                
+                match start_recording(&state, region, fps, cursor, out.clone()) {
                     Ok(()) => {
                         let event = RecorderEvent::Started { pts_ms: 0 };
                         write_event(&mut stdout, &event)?;
+                        
+                        // Start progress reporter with shared state
+                        let progress_state = state.clone();
+                        std::thread::spawn(move || {
+                            spawn_progress_reporter(progress_state);
+                        });
                     }
                     Err(e) => {
                         error!("Failed to start recording: {:#}", e);
@@ -77,7 +120,8 @@ async fn main() -> Result<()> {
                 
                 match stop_recording(&state) {
                     Ok((duration_ms, path)) => {
-                        info!("Recording stopped: duration={}ms, saved to {}", duration_ms, path.display());
+                        info!("Recording stopped: duration={}ms, saved to {}", 
+                            duration_ms, path.display());
                         let event = RecorderEvent::Stopped { duration_ms, path };
                         write_event(&mut stdout, &event)?;
                     }
@@ -113,23 +157,28 @@ fn start_recording(
     state: &Arc<Mutex<RecorderState>>,
     region: CaptureRegion,
     fps: u32,
+    cursor: bool,
     output_path: PathBuf,
 ) -> Result<()> {
+    // Rule 7: validate FPS
+    let fps = if fps > 0 && fps <= 60 { fps } else { 30 };
+    
+    // Build pipeline with proper MP4 muxing
     let pipeline_desc = format!(
-        "ximagesrc startx={} starty={} endx={} endy={} use-damage=false ! \
+        "ximagesrc startx={} starty={} endx={} endy={} use-damage=false show-pointer={} ! \
          video/x-raw,framerate={}/1 ! \
          videoconvert ! \
          video/x-raw,format=I420 ! \
-         x264enc speed-preset=ultrafast tune=zerolatency bitrate=4000 key-int-max={} pass=qual quantizer=23 ! \
-         video/x-h264,profile=baseline ! \
+         x264enc speed-preset=ultrafast tune=zerolatency ! \
+         h264parse ! \
          mp4mux ! \
          filesink location={} name=sink",
         region.x,
         region.y,
         region.x + region.width as i32 - 1,
         region.y + region.height as i32 - 1,
+        cursor,
         fps,
-        fps * 2,
         output_path.display()
     );
     
@@ -140,41 +189,60 @@ fn start_recording(
         .dynamic_cast::<gst::Pipeline>()
         .map_err(|_| anyhow::anyhow!("Pipeline is not a gst::Pipeline"))?;
     
+    // Set pipeline to playing state
     pipeline.set_state(gst::State::Playing)
         .context("Failed to set pipeline to PLAYING state")?;
     
     let mut state_guard = state.lock().unwrap();
-    state_guard.pipeline = Some(pipeline.clone());
+    state_guard.pipeline = Some(pipeline);
     state_guard.output_path = Some(output_path);
-    drop(state_guard);
+    state_guard.start_time = Some(std::time::Instant::now());
     
-    // Spawn progress reporter thread (uses sync GStreamer queries)
-    let pipe_weak = pipeline.downgrade();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            
-            if let Some(pipe) = pipe_weak.upgrade() {
-                if let Some(pos) = pipe.query_position::<gst::ClockTime>() {
-                    let event = RecorderEvent::Progress {
-                        pts_ms: pos.mseconds(),
-                    };
-                    if let Ok(json) = to_jsonl(&event) {
-                        use std::io::Write;
-                        let stdout = std::io::stdout();
-                        let mut handle = stdout.lock();
-                        let _ = handle.write_all(json.as_bytes());
-                        let _ = handle.flush();
-                        drop(handle);
-                    }
-                }
-            } else {
+    Ok(())
+}
+
+fn spawn_progress_reporter(state: Arc<Mutex<RecorderState>>) {
+    const MAX_REPORTS: u32 = 7200;  // Rule 2: max 1 hour at 500ms intervals
+    
+    let mut report_count = 0u32;
+    
+    // Rule 2: bounded loop
+    while report_count < MAX_REPORTS {
+        report_count += 1;
+        std::thread::sleep(Duration::from_millis(500));
+        
+        let state_guard = state.lock().unwrap();
+        
+        // Calculate duration from start time
+        let duration_ms = if let Some(start_time) = state_guard.start_time {
+            start_time.elapsed().as_millis() as u64
+        } else {
+            0
+        };
+        
+        // Check if pipeline still exists
+        if state_guard.pipeline.is_none() {
+            break;
+        }
+        
+        drop(state_guard);
+        
+        let event = RecorderEvent::Progress {
+            pts_ms: duration_ms,
+        };
+        
+        // Rule 7: check write result - write to stdout directly
+        if let Ok(json) = to_jsonl(&event) {
+            use std::io::Write;
+            let mut stdout = io::stdout();
+            if stdout.write_all(json.as_bytes()).is_err() {
+                break;
+            }
+            if stdout.flush().is_err() {
                 break;
             }
         }
-    });
-
-    Ok(())
+    }
 }
 
 fn stop_recording(state: &Arc<Mutex<RecorderState>>) -> Result<(u64, PathBuf)> {
@@ -186,34 +254,59 @@ fn stop_recording(state: &Arc<Mutex<RecorderState>>) -> Result<(u64, PathBuf)> {
     let output_path = state_guard.output_path.take()
         .context("No output path stored")?;
     
-    drop(state_guard); // Release lock before blocking operations
+    // Calculate final duration
+    let duration_ms = if let Some(start_time) = state_guard.start_time {
+        start_time.elapsed().as_millis() as u64
+    } else {
+        0
+    };
     
-    // Query duration before stopping
-    let duration_ms = pipeline.query_position::<gst::ClockTime>()
-        .map(|t| t.mseconds())
-        .unwrap_or(0);
+    // Clear start time to stop progress reporter
+    state_guard.start_time = None;
+    drop(state_guard);
     
     debug!("Sending EOS to finalize MP4 file");
     pipeline.send_event(gst::event::Eos::new());
     
-    // Wait for EOS to complete (max 5 seconds)
+    // Wait for EOS with proper timeout
     if let Some(bus) = pipeline.bus() {
+        // Wait up to 5 seconds for EOS
         let timeout = gst::ClockTime::from_seconds(5);
-        if let Some(msg) = bus.timed_pop_filtered(timeout, &[gst::MessageType::Eos, gst::MessageType::Error]) {
-            match msg.view() {
-                gst::MessageView::Error(err) => {
-                    error!("Pipeline error during EOS: {} (debug: {:?})", err.error(), err.debug());
+        
+        loop {
+            if let Some(msg) = bus.timed_pop_filtered(
+                timeout,
+                &[gst::MessageType::Eos, gst::MessageType::Error]
+            ) {
+                match msg.view() {
+                    gst::MessageView::Eos(_) => {
+                        debug!("EOS received, MP4 finalized");
+                        break;
+                    }
+                    gst::MessageView::Error(err) => {
+                        error!("Pipeline error: {} ({:?})", err.error(), err.debug());
+                        break;
+                    }
+                    _ => {}
                 }
-                gst::MessageView::Eos(_) => {
-                    debug!("EOS processed successfully");
-                }
-                _ => {}
+            } else {
+                error!("Timeout waiting for EOS");
+                break;
             }
         }
     }
     
+    // Ensure pipeline is stopped
     pipeline.set_state(gst::State::Null)
         .context("Failed to set pipeline to NULL state")?;
+    
+    // Give filesystem time to sync
+    std::thread::sleep(Duration::from_millis(100));
+    
+    // Rule 5: validate output
+    if duration_ms < 500 {
+        error!("Warning: Recording very short ({}ms), file may be corrupt", duration_ms);
+    }
     
     Ok((duration_ms, output_path))
 }

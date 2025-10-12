@@ -83,6 +83,7 @@ async fn main() -> Result<()> {
                     if let Some(ui) = ui_clone.upgrade() {
                         match event {
                             RecorderEvent::Progress { pts_ms } => {
+                                debug!("UI: Setting recording duration to {}ms", pts_ms);
                                 ui.set_recording_duration_ms(pts_ms as i32);
                             }
                             RecorderEvent::Stopped { duration_ms, .. } => {
@@ -152,8 +153,8 @@ async fn main() -> Result<()> {
 
     // Cancel callback - quit the app
     ui.on_cancel(|| {
-        info!("User canceled - exiting");
-        slint::quit_event_loop().ok();
+        info!("X button clicked - exiting");
+        std::process::exit(0);  // Force exit
     });
 
     ui.run()?;
@@ -165,7 +166,14 @@ async fn run_recorder(
     state: Arc<Mutex<AppStateData>>,
     region: CaptureRegion,
 ) -> Result<()> {
+    const MAX_RETRIES: u32 = 3;  // Rule 2: bounded loop
+    const MAX_DURATION_MS: u64 = 600000;  // Rule 2: 10 minute max recording
+    
     let output_path = PathBuf::from("/tmp/mandygif_recording.mp4");
+    
+    // Rule 5: Assertions for preconditions
+    assert!(region.width > 0 && region.height > 0);
+    assert!(region.width <= 3840 && region.height <= 2160);
     
     let cmd = RecorderCommand::Start {
         region,
@@ -178,10 +186,16 @@ async fn run_recorder(
         .parent().unwrap()
         .join("recorder-linux");
     
+    // Rule 7: Check path exists
+    if !recorder_bin.exists() {
+        error!("Recorder binary not found: {:?}", recorder_bin);
+        return Err(anyhow::anyhow!("Recorder binary not found"));
+    }
+    
     let mut child = Command::new(&recorder_bin)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::piped())  // Capture stderr for debugging
         .spawn()
         .context("Failed to spawn recorder")?;
     
@@ -189,7 +203,7 @@ async fn run_recorder(
     let stdout = child.stdout.take().unwrap();
     let mut reader = BufReader::new(stdout).lines();
     
-    // Create stop channel using mpsc (unbounded) instead of oneshot
+    // Create stop channel
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     state.lock().unwrap().stop_tx = Some(stop_tx);
     
@@ -198,38 +212,60 @@ async fn run_recorder(
     stdin.write_all(start_json.as_bytes()).await?;
     stdin.flush().await?;
     
-    // Read events loop
+    let mut stop_sent = false;
+    let mut progress_count = 0u32;  // Rule 2: bounded counter
+    
+    // Read events loop - Rule 2: bounded by MAX_DURATION_MS
     loop {
+        if progress_count >= (MAX_DURATION_MS / 500) as u32 {  // Progress every 500ms
+            error!("Recording exceeded maximum duration");
+            break;
+        }
+        
         tokio::select! {
             // Check for stop signal
             _ = stop_rx.recv() => {
-                info!("Stop signal received, sending stop command to recorder");
-                let stop_cmd = RecorderCommand::Stop;
-                let stop_json = to_jsonl(&stop_cmd)?;
-                stdin.write_all(stop_json.as_bytes()).await?;
-                stdin.flush().await?;
-                // Continue reading to get the stopped event
+                if !stop_sent {
+                    info!("Stop signal received, sending stop command to recorder");
+                    let stop_cmd = RecorderCommand::Stop;
+                    let stop_json = to_jsonl(&stop_cmd)?;
+                    
+                    // Rule 7: Check write result
+                    if stdin.write_all(stop_json.as_bytes()).await.is_ok() {
+                        let _ = stdin.flush().await;
+                    }
+                    stop_sent = true;
+                }
             }
             
-            // Read recorder events
+            // Read recorder events with timeout
             line = reader.next_line() => {
                 match line {
                     Ok(Some(line)) => {
                         if !line.starts_with('{') {
+                            debug!("Non-JSON from recorder: {}", line);
                             continue;
                         }
                         
                         match parse_recorder_event(&line) {
-                            Ok(RecorderEvent::Started { .. }) => {
-                                info!("Recording started");
-                                let _ = event_tx.send(RecorderEvent::Started { pts_ms: 0 });
+                            Ok(RecorderEvent::Started { pts_ms }) => {
+                                info!("Recording started at {}ms", pts_ms);
+                                let _ = event_tx.send(RecorderEvent::Started { pts_ms });
                             }
                             Ok(RecorderEvent::Progress { pts_ms }) => {
+                                debug!("Progress: {}ms", pts_ms);
+                                progress_count += 1;
                                 let _ = event_tx.send(RecorderEvent::Progress { pts_ms });
                             }
                             Ok(RecorderEvent::Stopped { duration_ms, path }) => {
                                 info!("Recording stopped: {}ms, saved to {}", 
                                     duration_ms, path.display());
+                                
+                                // Rule 5: Validate recording
+                                if duration_ms < 100 {
+                                    error!("Recording too short: {}ms", duration_ms);
+                                }
+                                
                                 state.lock().unwrap().recording_path = Some(path.clone());
                                 state.lock().unwrap().recording_duration_ms = duration_ms;
                                 let _ = event_tx.send(RecorderEvent::Stopped { 
@@ -238,9 +274,9 @@ async fn run_recorder(
                                 });
                                 break;
                             }
-                            Ok(event @ RecorderEvent::Error { .. }) => {
-                                error!("Recorder error");
-                                let _ = event_tx.send(event);
+                            Ok(RecorderEvent::Error { kind, hint }) => {
+                                error!("Recorder error: {:?} - {}", kind, hint);
+                                let _ = event_tx.send(RecorderEvent::Error { kind, hint });
                                 break;
                             }
                             Err(e) => {
@@ -248,7 +284,10 @@ async fn run_recorder(
                             }
                         }
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        info!("Recorder stdout closed");
+                        break;
+                    }
                     Err(e) => {
                         error!("Error reading from recorder: {}", e);
                         break;
@@ -258,7 +297,12 @@ async fn run_recorder(
         }
     }
     
-    let _ = child.wait().await;
+    // Rule 7: Ensure child process cleanup
+    let exit_status = child.wait().await?;
+    if !exit_status.success() {
+        error!("Recorder exited with error: {:?}", exit_status);
+    }
+    
     Ok(())
 }
 

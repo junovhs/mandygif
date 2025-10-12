@@ -28,8 +28,8 @@ export component UnifiedOverlay inherits Window {
     callback start-export();
     callback cancel();
 
-    // Selection box with green overlay
-    Rectangle {
+    // Selection box with green overlay - HIDDEN during recording
+    if !root.recording: Rectangle {
         x: root.sel-x * 1px;
         y: root.sel-y * 1px;
         width: root.sel-width * 1px;
@@ -39,14 +39,15 @@ export component UnifiedOverlay inherits Window {
         border-width: 2px;
     }
 
-    // Top bar - attached to selection
+    // Top bar - moves above recording area when recording
     Rectangle {
         x: root.sel-x * 1px;
-        y: root.sel-y * 1px - 40px;
+        y: root.recording ? (root.sel-y * 1px - 50px) : (root.sel-y * 1px - 40px);
         width: root.sel-width * 1px;
         height: 40px;
         background: #2a2a2a;
         border-radius: 8px;
+        opacity: root.recording ? 0.7 : 1.0;
         
         HorizontalBox {
             padding: 10px;
@@ -114,14 +115,15 @@ export component UnifiedOverlay inherits Window {
         }
     }
 
-    // Bottom control bar - attached to selection
+    // Bottom control bar - moves below recording area when recording
     Rectangle {
         x: root.sel-x * 1px;
-        y: root.sel-y * 1px + root.sel-height * 1px;
+        y: root.recording ? (root.sel-y * 1px + root.sel-height * 1px + 10px) : (root.sel-y * 1px + root.sel-height * 1px);
         width: root.sel-width * 1px;
         height: 50px;
         background: #2a2a2a;
         border-radius: 8px;
+        opacity: root.recording ? 0.7 : 1.0;
         
         HorizontalBox {
             padding: 10px;

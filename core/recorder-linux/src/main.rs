@@ -98,11 +98,8 @@ async fn main() -> Result<()> {
                         let event = RecorderEvent::Started { pts_ms: 0 };
                         write_event(&mut stdout, &event)?;
                         
-                        // Start progress reporter with shared state
-                        let progress_state = state.clone();
-                        std::thread::spawn(move || {
-                            spawn_progress_reporter(progress_state);
-                        });
+                        // Start progress reporter in background thread
+                        spawn_progress_reporter(state.clone());
                     }
                     Err(e) => {
                         error!("Failed to start recording: {:#}", e);
@@ -163,7 +160,7 @@ fn start_recording(
     // Rule 7: validate FPS
     let fps = if fps > 0 && fps <= 60 { fps } else { 30 };
     
-    // Build pipeline with proper MP4 muxing
+    // Build pipeline with qtmux for better MP4 muxing
     let pipeline_desc = format!(
         "ximagesrc startx={} starty={} endx={} endy={} use-damage=false show-pointer={} ! \
          video/x-raw,framerate={}/1 ! \
@@ -171,8 +168,8 @@ fn start_recording(
          video/x-raw,format=I420 ! \
          x264enc speed-preset=ultrafast tune=zerolatency ! \
          h264parse ! \
-         mp4mux ! \
-         filesink location={} name=sink",
+         qtmux name=mux ! \
+         filesink location={} sync=false",
         region.x,
         region.y,
         region.x + region.width as i32 - 1,
@@ -204,45 +201,48 @@ fn start_recording(
 fn spawn_progress_reporter(state: Arc<Mutex<RecorderState>>) {
     const MAX_REPORTS: u32 = 7200;  // Rule 2: max 1 hour at 500ms intervals
     
-    let mut report_count = 0u32;
-    
-    // Rule 2: bounded loop
-    while report_count < MAX_REPORTS {
-        report_count += 1;
-        std::thread::sleep(Duration::from_millis(500));
+    std::thread::spawn(move || {
+        let mut report_count = 0u32;
         
-        let state_guard = state.lock().unwrap();
-        
-        // Calculate duration from start time
-        let duration_ms = if let Some(start_time) = state_guard.start_time {
-            start_time.elapsed().as_millis() as u64
-        } else {
-            0
-        };
-        
-        // Check if pipeline still exists
-        if state_guard.pipeline.is_none() {
-            break;
-        }
-        
-        drop(state_guard);
-        
-        let event = RecorderEvent::Progress {
-            pts_ms: duration_ms,
-        };
-        
-        // Rule 7: check write result - write to stdout directly
-        if let Ok(json) = to_jsonl(&event) {
-            use std::io::Write;
-            let mut stdout = io::stdout();
-            if stdout.write_all(json.as_bytes()).is_err() {
+        // Rule 2: bounded loop
+        while report_count < MAX_REPORTS {
+            report_count += 1;
+            std::thread::sleep(Duration::from_millis(500));
+            
+            let state_guard = state.lock().unwrap();
+            
+            // Calculate duration from start time
+            let duration_ms = if let Some(start_time) = state_guard.start_time {
+                start_time.elapsed().as_millis() as u64
+            } else {
+                0
+            };
+            
+            // Check if pipeline still exists (stopped if None)
+            if state_guard.pipeline.is_none() {
                 break;
             }
-            if stdout.flush().is_err() {
-                break;
+            
+            drop(state_guard);
+            
+            let event = RecorderEvent::Progress {
+                pts_ms: duration_ms,
+            };
+            
+            // Rule 7: check write result - write to stdout directly
+            if let Ok(json) = to_jsonl(&event) {
+                use std::io::Write;
+                let mut stdout = io::stdout();
+                if stdout.write_all(json.as_bytes()).is_err() {
+                    break;
+                }
+                if stdout.flush().is_err() {
+                    break;
+                }
             }
         }
-    }
+        debug!("Progress reporter thread exiting");
+    });
 }
 
 fn stop_recording(state: &Arc<Mutex<RecorderState>>) -> Result<(u64, PathBuf)> {

@@ -1,0 +1,3642 @@
+================================================================================
+FILE: .gitignore
+================================================================================
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.dmg
+*.exe
+*.AppImage
+*.deb
+*.rpm
+
+# Temp/test files
+/test_output/
+*.mp4
+*.gif
+*.webp
+
+================================================================================
+FILE: Cargo.toml
+================================================================================
+[workspace]
+members = [
+    "core/protocol",
+    "core/recorder-linux",
+    "core/recorder-mac", 
+    "core/recorder-win",
+    "core/encoder",
+    "core/captions",
+    "core/region-selector",
+    "ui",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["MandyGIF Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+================================================================================
+FILE: README.md
+================================================================================
+# MandyGIF Development Handoff Document
+
+When writing/modifying code, obey this mantra:
+Least Power — simplest viable construct (KISS).
+Modularity — clean, replaceable boundaries (abstractions).
+Single Responsibility — one purpose per unit (no tangles).
+Antifragility — failure strengthens (resilience, degradation).
+Transparency — clarity over cleverness (self-reading intent).
+Reduce Surface Area — expose essentials (lean interfaces).
+Emergence — simple interactions yield complexity (adaptive).
+Decentralization — distribute control (peer scale).
+Adaptivity — evolve with context (CI/branch).
+Redundancy — thoughtful backups (invisible failover).
+Debug addendum: Evidence-first (min repro + env). Structured logs (JSONL: ts/level/rid/subsystem/action/code/msg/context). Stable errors (codes, causes, next steps—never swallow). Instrumentation (flag-guarded probes at entry/exit/decisions/fails; strip post-fix). No guessing (flag thin data, request exact logs/cmds). Artifacts (save failing inputs/files, print paths). Confidence (low/med/high labels).
+Output executable code with these baked in + diff note.
+
+## Journey Summary
+
+### Vision
+Build a cross-platform, offline, native screen-to-GIF recorder that **destroys GIPHY Capture** - smooth, fast, professional quality, with clean architecture that won't rot.
+
+### Architecture Decisions
+**Core Principle**: Rust + Slint UI + Native Capture/Encode + JSONL IPC
+
+**Why this stack:**
+- **Least Power**: Slint for declarative UI, native APIs per platform, JSONL for IPC (no over-engineered RPC)
+- **Modularity**: Clean process boundaries - UI doesn't know about GStreamer internals
+- **Single Responsibility**: Each binary has one job (record, encode, select region, orchestrate)
+- **Antifragility**: Process crashes don't take down the whole app; each component testable in isolation
+- **Transparency**: JSONL messages are human-readable, debuggable with `tee`, versionable
+
+### What We Built
+
+#### 1. **Protocol Layer** (`core/protocol/`)
+- Versioned JSONL message definitions using Serde
+- Two protocols: Recorder ↔ UI, Encoder ↔ UI
+- Golden tests ensure protocol stability
+- Zero dependencies on implementation details
+
+**Key types:**
+```rust
+RecorderCommand::Start { region, fps, cursor, out }
+RecorderEvent::Progress { pts_ms }
+EncoderCommand::Gif { input, trim, fps, scale_px, loop_mode, captions, out }
+```
+
+#### 2. **Linux Recorder** (`core/recorder-linux/`)
+- **Tech**: GStreamer + PipeWire portal (X11/XWayland for now, Wayland native planned)
+- **Flow**: ximagesrc → videoconvert → x264enc → mp4mux → filesink
+- **Streams to disk** during recording (no RAM buffer bloat)
+- Emits progress events every 500ms with PTS
+- EOS handling ensures MP4 finalization before exit
+
+**Critical lesson learned**: Progress events from background thread need proper stdout locking to avoid buffering issues.
+
+#### 3. **Encoder** (`core/encoder/`)
+- **GIF**: ffmpeg palettegen/paletteuse (2-pass for quality)
+- **MP4**: ffmpeg with libx264, CRF mapping from quality slider (0.0-1.0 → CRF 51-18)
+- **WebP**: ffmpeg with lossy/lossless toggle
+- All operations use temp directories, stream processing (no memory explosion)
+
+**Not yet implemented**: Caption rendering (Phase 1: ffmpeg drawtext filters exist but not wired)
+
+#### 4. **Region Selector** (`core/region-selector/`)
+- **Tech**: Slint fullscreen transparent overlay
+- **UX**: GIPHY Capture style - draggable title bar, resizable from bottom-right corner with 3-line handle
+- **Output**: JSON coordinates on stdout when user confirms
+
+**Evolution**:
+- Started with X11 raw overlay (flickered, high CPU) ❌
+- Tried Flameshot click-drag approach (smooth but no persistent window) ⚠️
+- Settled on Slint windowed overlay (buttery smooth, cross-platform) ✅
+
+**Key insight**: Slint's `Path` primitive for vector graphics > pixel-by-pixel Rectangle hacks
+
+#### 5. **Main UI** (`ui/`)
+- **Tech**: Slint with async Tokio runtime
+- **Pattern**: Spawn child processes, communicate via JSONL over stdin/stdout
+- **Critical fix**: UI updates MUST use `slint::invoke_from_event_loop()` - can't mutate UI from arbitrary async tasks
+
+**Progress timer fix journey**:
+1. Initial: Weak references failed to upgrade ❌
+2. Channel approach: Events sent but UI didn't update ❌  
+3. Final: Channel + `invoke_from_event_loop()` ✅
+
+**Lessons**:
+- Slint has its own event loop; respect it
+- Channels bridge async world → UI world cleanly
+- Debug with `eprintln!` everywhere when threading issues arise
+
+---
+
+## Technical Architecture (Comprehensive)
+
+### System Diagram
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Main UI (Slint)                       │
+│  - State management (AppStateData)                           │
+│  - Spawns child processes                                    │
+│  - Reads JSONL events via tokio::process                     │
+└────────┬──────────────────────────────┬─────────────────────┘
+         │                              │
+         │ JSONL/stdin/stdout          │ JSONL/stdin/stdout
+         ▼                              ▼
+┌──────────────────────┐      ┌──────────────────────┐
+│  recorder-linux      │      │     encoder          │
+│  (GStreamer)         │      │  (ffmpeg wrapper)    │
+│                      │      │                      │
+│  - ximagesrc         │      │  - palettegen        │
+│  - x264enc           │      │  - libx264/libwebp   │
+│  - Progress thread   │      │  - Trim/scale        │
+└──────────────────────┘      └──────────────────────┘
+
+         ┌──────────────────────┐
+         │  region-selector     │
+         │  (Slint overlay)     │
+         │                      │
+         │  - Transparent win   │
+         │  - Drag/resize       │
+         │  - JSON output       │
+         └──────────────────────┘
+```
+
+### Data Flow: Recording Session
+
+**1. User Interaction**
+```
+User clicks "Start Recording"
+  ↓
+UI.on_start_recording() callback fires
+  ↓
+region = ui.get_capture_region() // Currently hardcoded 800x600
+  ↓
+Spawn recorder-linux binary
+  ↓
+Create channel: (progress_tx, progress_rx)
+  ↓
+Spawn two async tasks:
+  - run_recorder() // Talks to child process
+  - UI update task  // Receives events, calls invoke_from_event_loop()
+```
+
+**2. Recorder Process**
+```rust
+// In recorder-linux main loop
+stdin reads: {"cmd":"start","region":{...},"fps":30,...}
+  ↓
+Parse RecorderCommand::Start
+  ↓
+Build GStreamer pipeline:
+  ximagesrc startx=X starty=Y endx=X2 endy=Y2
+  ↓ video/x-raw,framerate=30/1
+  ↓ videoconvert
+  ↓ video/x-raw,format=I420
+  ↓ x264enc speed-preset=ultrafast tune=zerolatency
+  ↓ mp4mux
+  ↓ filesink location=/tmp/mandygif_recording.mp4
+  
+Set pipeline to PLAYING
+  ↓
+stdout writes: {"event":"started","pts_ms":0}\n
+  ↓
+Background thread queries pipeline.query_position() every 500ms
+  ↓
+stdout writes: {"event":"progress","pts_ms":499}\n
+         {"event":"progress","pts_ms":999}\n
+         ...
+```
+
+**3. UI Update Task**
+```rust
+// In UI async task
+loop {
+    event = progress_rx.recv().await
+    ↓
+    slint::invoke_from_event_loop(move || {
+        ui.set_recording_duration_ms(pts_ms)
+    })
+}
+```
+
+**4. Stop Recording**
+```
+User clicks "Stop Recording"
+  ↓
+Send () via oneshot channel to run_recorder task
+  ↓
+run_recorder writes: {"cmd":"stop"}\n to child stdin
+  ↓
+Recorder receives stop command
+  ↓
+pipeline.send_event(Eos)
+  ↓
+Wait for EOS on bus (max 5 seconds)
+  ↓
+pipeline.set_state(Null)
+  ↓
+stdout writes: {"event":"stopped","duration_ms":10333,"path":"/tmp/..."}\n
+  ↓
+UI receives Stopped event → transition to Editing state
+```
+
+### Data Flow: Export Session
+
+**1. User configures export**
+```
+UI shows:
+  - Format dropdown (GIF/MP4/WebP)
+  - FPS slider (5-60)
+  - Trim handles (start_ms, end_ms)
+  - Scale width (480/720/1080)
+```
+
+**2. User clicks export**
+```rust
+let cmd = match format {
+    "gif" => EncoderCommand::Gif {
+        input: "/tmp/mandygif_recording.mp4",
+        trim: TrimRange { start_ms, end_ms },
+        fps: 15,
+        scale_px: Some(480),
+        loop_mode: LoopMode::Normal,
+        captions: vec![],
+        out: "/tmp/mandygif_export.gif"
+    },
+    // ... similar for mp4/webp
+};
+
+Spawn encoder binary
+  ↓
+Write cmd as JSONL to stdin
+  ↓
+Read events from stdout
+```
+
+**3. Encoder Process (GIF example)**
+```
+Read EncoderCommand::Gif from stdin
+  ↓
+Step 1: Generate palette
+  ffmpeg -i input.mp4 -ss 0.2s -to 5.2s 
+         -vf "fps=15,scale=480:-1:flags=lanczos,palettegen"
+         -y /tmp/palette.png
+  ↓
+Step 2: Apply palette
+  ffmpeg -i input.mp4 -i /tmp/palette.png
+         -ss 0.2s -to 5.2s
+         -lavfi "fps=15,scale=480:-1:flags=lanczos [x]; [x][1:v] paletteuse"
+         -loop 0 -y output.gif
+  ↓
+stdout writes: {"event":"done","path":"/tmp/mandygif_export.gif"}\n
+```
+
+### Region Selector Deep Dive
+
+**Architecture**:
+- Single Slint Window (3840x2160px to cover 4K displays)
+- `background: transparent` (no fullscreen darkening)
+- All UI elements positioned absolutely relative to selection box
+
+**Components**:
+```
+Selection Box (Rectangle)
+  ├─ Colored overlay (#00ffff20) with 2px border
+  ├─ Top bar (-40px Y offset)
+  │   ├─ Dimensions text: "1920 × 1080"
+  │   ├─ Close button (red X)
+  │   └─ TouchArea (draggable)
+  ├─ Bottom bar (+height Y offset)
+  │   ├─ REC button (confirms selection)
+  │   └─ Resize handle (3 diagonal Path elements)
+  └─ TouchArea on resize handle
+```
+
+**Interaction Model**:
+
+*Moving*:
+```rust
+// Top bar TouchArea
+pointer-event(down) => {
+    offset-x = mouse-x
+    offset-y = mouse-y
+}
+moved => {
+    sel-x += mouse-x - offset-x
+    sel-y += mouse-y - offset-y
+}
+```
+
+*Resizing*:
+```rust
+// Resize handle TouchArea
+moved => {
+    sel-width = max(200px, sel-width + mouse-x)
+    sel-height = max(100px, sel-height + mouse-y)
+}
+```
+
+**Output**:
+```rust
+on_confirm() => {
+    let region = Region { x, y, width, height };
+    println!("{}", serde_json::to_string(&region)?);
+    quit_event_loop();
+}
+```
+
+---
+
+## Current State & Known Issues
+
+### ✅ Working
+- Recording with live timer updates (Linux)
+- Stop recording with proper MP4 finalization
+- Region selector UI (Linux + Windows confirmed)
+- Protocol definitions stable
+- Encoder exists and tested standalone
+
+### ⚠️ Partially Working
+- Export flow: Button wired but not end-to-end tested
+- Caption rendering: Code exists but not integrated
+
+### ❌ Not Working / TODO
+1. **Region selector not integrated into main UI**
+   - Button logs "not yet implemented"
+   - Need to spawn region-selector, parse JSON, update capture_region
+   
+2. **Windows/macOS recorders**
+   - Stubs exist, return UnsupportedPlatform error
+   - Need WGC (Windows) and SCStream (macOS) implementations
+
+3. **Preview during recording**
+   - MP4 file exists at `/tmp/mandygif_recording.mp4`
+   - Could use video player widget or frame extraction
+
+4. **Caption authoring UI**
+   - Need text input, timeline placement, style controls
+   - Backend (ffmpeg drawtext) ready
+
+5. **Advanced features**
+   - Ping-pong loop (needs frame reversal)
+   - Rolling 30s buffer (needs segment recording)
+   - Multiple output formats in one pass
+
+---
+
+## Build & Test Commands
+
+```bash
+# Build everything
+cargo build --release
+
+# Test recorder standalone (Linux only)
+echo '{"cmd":"start","region":{"x":100,"y":100,"width":800,"height":600},"fps":30,"cursor":false,"out":"/tmp/test.mp4"}' | ./target/debug/recorder-linux
+# Wait 3 seconds
+echo '{"cmd":"stop"}' | ./target/debug/recorder-linux
+
+# Test encoder standalone
+echo '{"cmd":"gif","in":"/tmp/test.mp4","trim":{"start_ms":0,"end_ms":2700},"fps":15,"scale_px":480,"loop":"normal","captions":[],"out":"/tmp/test.gif"}' | ./target/debug/encoder
+
+# Test region selector
+./target/debug/region-selector
+# Returns: {"x":460,"y":240,"width":1280,"height":720}
+
+# Run main UI
+./target/release/mandygif
+```
+
+---
+
+## Debugging Patterns Used
+
+**1. Process Communication Issues**
+```rust
+// Always wrap events with debug output
+eprintln!("UI: Got line from recorder: {:?}", line);
+eprintln!("Sending progress: {}ms", pts_ms);
+```
+
+**2. Slint UI Update Issues**
+```rust
+// WRONG - won't update UI
+tokio::spawn(async move {
+    ui.set_value(x); // ❌ Called from wrong thread
+});
+
+// RIGHT - queues on Slint event loop
+slint::invoke_from_event_loop(move || {
+    ui.set_value(x); // ✅ Runs on UI thread
+});
+```
+
+**3. GStreamer Pipeline Issues**
+```bash
+# Redirect stderr to see GStreamer logs
+./target/debug/recorder-linux 2>&1 | tee recorder.log
+
+# Verify MP4 is valid
+ffprobe /tmp/mandygif_recording.mp4
+```
+
+**4. JSONL Protocol Issues**
+```bash
+# Pipe through jq for pretty printing
+./target/debug/region-selector | jq .
+
+# Test with invalid input to verify error handling
+echo 'invalid json' | ./target/debug/encoder
+```
+
+---
+
+## Next Immediate Steps (Priority Order)
+
+### 1. **Integrate Region Selector** (1-2 hours)
+**File**: `ui/src/main.rs`
+
+```rust
+ui.on_show_region_selector(move || {
+    let ui_weak = ui.as_weak();
+    tokio::spawn(async move {
+        let region_bin = std::env::current_exe()?
+            .parent().unwrap()
+            .join("region-selector");
+        
+        let output = Command::new(&region_bin)
+            .output()
+            .await?;
+        
+        if output.status.success() {
+            let json = String::from_utf8_lossy(&output.stdout);
+            if let Ok(region) = serde_json::from_str::<Region>(&json) {
+                slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_capture_region(Region {
+                            x: region.x,
+                            y: region.y,
+                            width: region.width as i32,
+                            height: region.height as i32,
+                        });
+                    }
+                }).unwrap();
+            }
+        }
+    });
+});
+```
+
+**Confidence**: High (same pattern as recorder/encoder)
+
+### 2. **Test Export Flow End-to-End** (30 min)
+- Record 5 second clip
+- Export to GIF with trim
+- Verify output quality
+- Test MP4/WebP formats
+
+**Confidence**: Medium (encoder tested standalone, integration unknown)
+
+### 3. **Add Preview Window** (2-3 hours)
+Options:
+- **A**: Slint VideoPlayer widget (if available)
+- **B**: Extract frames with ffmpeg, show as Image sequence
+- **C**: Embed mpv/vlc via platform window handle
+
+**Confidence**: Medium (depends on Slint capabilities)
+
+### 4. **Caption UI** (4-6 hours)
+- Text input field
+- Font picker (list system fonts)
+- Color pickers (text + stroke)
+- Timeline scrubber for placement
+- Live preview overlay
+
+**Confidence**: High (UI work, backend ready)
+
+### 5. **Windows Recorder** (8-12 hours)
+- Use `windows` crate for WGC APIs
+- Capture to texture → encode with Media Foundation
+- Handle multi-monitor coordinates
+- Cursor overlay
+
+**Confidence**: Medium (API available, unfamiliar territory)
+
+---
+
+## Key Files Reference
+
+```
+mandygif/
+├── core/
+│   ├── protocol/
+│   │   ├── src/lib.rs           # JSONL message definitions
+│   │   └── tests/golden.rs      # Protocol stability tests
+│   │
+│   ├── recorder-linux/
+│   │   └── src/main.rs          # GStreamer pipeline + progress thread
+│   │
+│   ├── encoder/
+│   │   └── src/main.rs          # ffmpeg wrapper (GIF/MP4/WebP)
+│   │
+│   ├── captions/
+│   │   └── src/lib.rs           # ffmpeg drawtext filter generation
+│   │
+│   └── region-selector/
+│       ├── src/main.rs          # Region struct + callbacks
+│       └── ui/selector.slint    # Transparent overlay UI
+│
+└── ui/
+    ├── src/main.rs              # Main app: spawns processes, event loop
+    └── ui/main.slint            # Main window layout (placeholder)
+```
+
+---
+
+## Architecture Wins
+
+1. **Process isolation**: UI crash ≠ data loss; encoder crash ≠ UI freeze
+2. **Testability**: Each binary can be fuzzed, profiled, debugged independently
+3. **Cross-platform**: Platform-specific code contained in recorder binaries
+4. **Observable**: JSONL can be logged, replayed, analyzed with standard tools
+5. **Evolvable**: Can swap GStreamer → FFmpeg, or Slint → egui, without rewriting everything
+
+## Architecture Debts
+
+1. **No error recovery**: If recorder crashes mid-recording, recording lost
+2. **Hardcoded paths**: `/tmp/mandygif_*` not configurable, conflicts possible
+3. **No state persistence**: Close app = lose unsaved recordings
+4. **Single monitor**: Region selector assumes screen 0
+5. **No streaming optimizations**: Everything goes through disk (fine for short clips)
+
+---
+
+## Handoff Notes
+
+**Context for next session**:
+- You're picking up a working prototype
+- Core loop proven: record → stop → edit → export
+- UI framework (Slint) has learning curve but pays off in cross-platform + performance
+- GStreamer knowledge helpful but not required (wrapper is done)
+- Next phase is integration & polish, not greenfield architecture
+
+**When stuck**:
+- Add `eprintln!` liberally - stdout is for protocol, stderr for debug
+- Test binaries standalone before integration
+- Slint hot-reloads `.slint` files - use this for UI iteration
+- Check process exit codes when spawning (`status.success()`)
+
+**Philosophy maintained**:
+- If you're writing >20 lines without testing, stop and test
+- If abstraction doesn't pay for itself in 3 uses, inline it
+- If you can't explain it in one sentence, simplify it
+
+---
+!!!!ALWAYS REMEMBER!!!!!
+
+When writing/modifying code, ***obey this mantra:***
+Least Power — simplest viable construct (KISS).
+Modularity — clean, replaceable boundaries (abstractions).
+Single Responsibility — one purpose per unit (no tangles).
+Antifragility — failure strengthens (resilience, degradation).
+Transparency — clarity over cleverness (self-reading intent).
+Reduce Surface Area — expose essentials (lean interfaces).
+Emergence — simple interactions yield complexity (adaptive).
+Decentralization — distribute control (peer scale).
+Adaptivity — evolve with context (CI/branch).
+Redundancy — thoughtful backups (invisible failover).
+Debug addendum: Evidence-first (min repro + env). Structured logs (JSONL: ts/level/rid/subsystem/action/code/msg/context). Stable errors (codes, causes, next steps—never swallow). Instrumentation (flag-guarded probes at entry/exit/decisions/fails; strip post-fix). No guessing (flag thin data, request exact logs/cmds). Artifacts (save failing inputs/files, print paths). Confidence (low/med/high labels).
+Output executable code with these baked in + diff note.
+
+**End of handoff. Godspeed.** 🚀
+
+================================================================================
+FILE: core/captions/Cargo.toml
+================================================================================
+[package]
+name = "mandygif-captions"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+mandygif-protocol = { path = "../protocol" }
+anyhow.workspace = true
+
+# Phase 1: Will use ffmpeg drawtext (external process)
+# Phase 2: skia-safe for direct rendering
+# skia-safe = { version = "0.74", optional = true }
+
+[features]
+default = []
+skia = []  # Enable for Phase 2
+
+================================================================================
+FILE: core/captions/src/lib.rs
+================================================================================
+//! Caption rendering module
+//! 
+//! Phase 1: Generates ffmpeg drawtext filter strings
+//! Phase 2: Direct rendering with skia-safe (SkParagraph)
+
+use mandygif_protocol::Caption;
+
+/// Generate ffmpeg drawtext filter for a caption (Phase 1)
+pub fn to_ffmpeg_drawtext(caption: &Caption, video_width: u32, video_height: u32) -> String {
+    let x = (caption.rect.x * video_width as f32) as u32;
+    let y = (caption.rect.y * video_height as f32) as u32;
+    
+    // Basic drawtext filter with timing
+    format!(
+        "drawtext=text='{}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:fontsize={}:fontcolor={}:borderw=2:bordercolor={}:x={}:y={}:enable='between(t,{},{})'",
+        caption.text.replace('\'', "\\'"),
+        caption.style.size,
+        caption.style.color,
+        caption.style.stroke,
+        x,
+        y,
+        caption.start_ms as f64 / 1000.0,
+        caption.end_ms as f64 / 1000.0
+    )
+}
+
+/// Combine multiple captions into a filter chain
+pub fn build_filter_chain(captions: &[Caption], video_width: u32, video_height: u32) -> String {
+    captions
+        .iter()
+        .map(|c| to_ffmpeg_drawtext(c, video_width, video_height))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Generate ffmpeg drawtext filter using expressions (main_w/main_h)
+/// Works correctly after scaling operations
+pub fn to_ffmpeg_drawtext_expr(caption: &Caption) -> String {
+    let x_expr = format!("(main_w*{:.6})", caption.rect.x);
+    let y_expr = format!("(main_h*{:.6})", caption.rect.y);
+    let start_s = (caption.start_ms as f64) / 1000.0;
+    let end_s = (caption.end_ms as f64) / 1000.0;
+    let fontcolor = ff_color(&caption.style.color, 1.0);
+    let bordercolor = ff_color(&caption.style.stroke, 1.0);
+    
+    format!(
+        "drawtext=text='{}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:fontsize={}:fontcolor={}:borderw=2:bordercolor={}:x={}:y={}:enable='between(t,{:.3},{:.3})'",
+        caption.text.replace('\'', "\\'"),
+        caption.style.size,
+        fontcolor,
+        bordercolor,
+        x_expr,
+        y_expr,
+        start_s,
+        end_s
+    )
+}
+
+/// Combine multiple captions using expression-based positioning
+pub fn build_filter_chain_expr(captions: &[Caption]) -> String {
+    captions
+        .iter()
+        .map(to_ffmpeg_drawtext_expr)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Normalize CSS-like hex colors to ffmpeg syntax
+/// #RGB/#RRGGBB/#RGBA/#RRGGBBAA → 0xRRGGBB or 0xRRGGBB@A.A
+fn ff_color(input: &str, default_alpha: f32) -> String {
+    let s = input.trim();
+    if s.starts_with("0x") || s.contains('@') {
+        return s.to_string();
+    }
+    
+    let (r, g, b, a) = if let Some(hex) = s.strip_prefix('#') {
+        match hex.len() {
+            3 => {
+                let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).unwrap_or(0);
+                (r, g, b, (default_alpha * 255.0).round() as u8)
+            }
+            4 => {
+                let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).unwrap_or(0);
+                let a = u8::from_str_radix(&hex[3..4].repeat(2), 16).unwrap_or(255);
+                (r, g, b, a)
+            }
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+                (r, g, b, (default_alpha * 255.0).round() as u8)
+            }
+            8 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+                let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255);
+                (r, g, b, a)
+            }
+            _ => (255, 255, 255, (default_alpha * 255.0).round() as u8),
+        }
+    } else {
+        return s.to_string();
+    };
+    
+    if a == 255 {
+        format!("0x{:02X}{:02X}{:02X}", r, g, b)
+    } else {
+        let alpha = (a as f32) / 255.0;
+        format!("0x{:02X}{:02X}{:02X}@{:.3}", r, g, b, alpha)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mandygif_protocol::{CaptionStyle, CaptionRect, CaptionAnimation};
+
+    #[test]
+    fn test_drawtext_generation() {
+        let caption = Caption {
+            text: "Hello World".into(),
+            font: "System".into(),
+            style: CaptionStyle {
+                color: "#ffffff".into(),
+                stroke: "#000000".into(),
+                size: 24,
+            },
+            rect: CaptionRect { x: 0.1, y: 0.8, w: 0.8, h: 0.1 },
+            start_ms: 1000,
+            end_ms: 3000,
+            animation: CaptionAnimation::None,
+        };
+        
+        let filter = to_ffmpeg_drawtext(&caption, 1920, 1080);
+        assert!(filter.contains("Hello World"));
+        assert!(filter.contains("fontsize=24"));
+        assert!(filter.contains("enable='between(t,1,3)'"));
+    }
+    
+    #[test]
+    fn test_expr_generation() {
+        let caption = Caption {
+            text: "Hi".into(),
+            font: "System".into(),
+            style: CaptionStyle {
+                color: "#fff".into(),
+                stroke: "#0008".into(),
+                size: 20,
+            },
+            rect: CaptionRect { x: 0.25, y: 0.75, w: 0.0, h: 0.0 },
+            start_ms: 0,
+            end_ms: 1500,
+            animation: CaptionAnimation::None,
+        };
+        
+        let f = to_ffmpeg_drawtext_expr(&caption);
+        assert!(f.contains("x=(main_w*0.250000)"));
+        assert!(f.contains("y=(main_h*0.750000)"));
+        assert!(f.contains("fontsize=20"));
+        assert!(f.contains("enable='between(t,0.000,1.500)'"));
+    }
+}
+
+================================================================================
+FILE: core/encoder/Cargo.toml
+================================================================================
+[package]
+name = "mandygif-encoder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "encoder"
+path = "src/main.rs"
+
+[dependencies]
+mandygif-protocol = { path = "../protocol" }
+mandygif-captions = { path = "../captions" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+
+# GIF encoding
+gifski = "1.14"
+imgref = "1.10"
+rgb = "0.8"
+
+# Image loading
+image = "0.25"
+
+# Temp directories
+tempfile = "3.10"
+
+================================================================================
+FILE: core/encoder/src/main.rs
+================================================================================
+//! Cross-platform encoder: GIF, MP4, WebP
+//! 
+//! GIF: gifski (best quality dithering)
+//! MP4: ffmpeg (hardware encode when available, x264 fallback)
+//! WebP: ffmpeg (lossy + lossless support)
+
+use anyhow::{Context, Result, bail};
+use mandygif_protocol::*;
+use mandygif_captions::build_filter_chain_expr;
+use std::io::{self, BufRead, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use tracing::{info, error, debug, warn};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into())
+        )
+        .init();
+
+    info!("encoder starting (protocol v{})", PROTOCOL_VERSION);
+    
+    // Check ffmpeg availability
+    check_ffmpeg()?;
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    
+    for line in stdin.lock().lines() {
+        let line = line?;
+        debug!("Received: {}", line);
+        
+        match parse_encoder_command(&line) {
+            Ok(EncoderCommand::Gif { input, trim, fps, scale_px, loop_mode, captions, out }) => {
+                info!("Encoding GIF: {} -> {} (fps={}, scale={:?})", 
+                    input.display(), out.display(), fps, scale_px);
+                
+                match encode_gif(&input, &trim, fps, scale_px, &loop_mode, &captions, &out).await {
+                    Ok(()) => {
+                        info!("GIF encoded successfully: {}", out.display());
+                        let event = EncoderEvent::Done { path: out };
+                        write_event(&mut stdout, &event)?;
+                    }
+                    Err(e) => {
+                        error!("GIF encoding failed: {:#}", e);
+                        let event = EncoderEvent::Error {
+                            kind: ErrorKind::EncodingFailed,
+                            hint: e.to_string(),
+                        };
+                        write_event(&mut stdout, &event)?;
+                    }
+                }
+            }
+            
+            Ok(EncoderCommand::Mp4 { input, trim, fps, scale_px, quality, captions, out }) => {
+                info!("Encoding MP4: {} -> {} (fps={}, quality={}, scale={:?})", 
+                    input.display(), out.display(), fps, quality, scale_px);
+                
+                match encode_mp4(&input, &trim, fps, scale_px, quality, &captions, &out).await {
+                    Ok(()) => {
+                        info!("MP4 encoded successfully: {}", out.display());
+                        let event = EncoderEvent::Done { path: out };
+                        write_event(&mut stdout, &event)?;
+                    }
+                    Err(e) => {
+                        error!("MP4 encoding failed: {:#}", e);
+                        let event = EncoderEvent::Error {
+                            kind: ErrorKind::EncodingFailed,
+                            hint: e.to_string(),
+                        };
+                        write_event(&mut stdout, &event)?;
+                    }
+                }
+            }
+            
+            Ok(EncoderCommand::Webp { input, trim, fps, scale_px, quality, lossless, captions, out }) => {
+                info!("Encoding WebP: {} -> {} (fps={}, quality={}, lossless={}, scale={:?})", 
+                    input.display(), out.display(), fps, quality, lossless, scale_px);
+                
+                match encode_webp(&input, &trim, fps, scale_px, quality, lossless, &captions, &out).await {
+                    Ok(()) => {
+                        info!("WebP encoded successfully: {}", out.display());
+                        let event = EncoderEvent::Done { path: out };
+                        write_event(&mut stdout, &event)?;
+                    }
+                    Err(e) => {
+                        error!("WebP encoding failed: {:#}", e);
+                        let event = EncoderEvent::Error {
+                            kind: ErrorKind::EncodingFailed,
+                            hint: e.to_string(),
+                        };
+                        write_event(&mut stdout, &event)?;
+                    }
+                }
+            }
+            
+            Err(e) => {
+                error!("Invalid command: {}", e);
+                let event = EncoderEvent::Error {
+                    kind: ErrorKind::InvalidInput,
+                    hint: format!("Could not parse command: {}", e),
+                };
+                write_event(&mut stdout, &event)?;
+            }
+        }
+    }
+    
+    info!("Encoder shutting down");
+    Ok(())
+}
+
+/// Check if ffmpeg is available on the system
+fn check_ffmpeg() -> Result<()> {
+    let output = Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .context("ffmpeg not found - please install ffmpeg")?;
+    
+    if !output.status.success() {
+        bail!("ffmpeg exists but returned error");
+    }
+    
+    let version = String::from_utf8_lossy(&output.stdout);
+    let first_line = version.lines().next().unwrap_or("unknown");
+    info!("Using {}", first_line);
+    
+    Ok(())
+}
+
+/// Encode GIF using ffmpeg palettegen (faster, reliable)
+async fn encode_gif(
+    input: &Path,
+    trim: &TrimRange,
+    fps: u32,
+    scale_px: Option<u32>,
+    loop_mode: &LoopMode,
+    captions: &[Caption],
+    output: &Path,
+) -> Result<()> {
+    let temp_dir = tempfile::tempdir().context("Failed to create temp dir")?;
+    let palette_path = temp_dir.path().join("palette.png");
+    
+    let video_filter = build_video_filter(fps, scale_px, captions);
+    let start_s = ms_to_secs(trim.start_ms);
+    let dur_s = ms_to_secs(trim.end_ms.saturating_sub(trim.start_ms));
+    
+    // Step 1: Generate palette
+    debug!("Generating palette for GIF");
+    let mut palette_cmd = Command::new("ffmpeg");
+    palette_cmd
+        .arg("-ss").arg(&start_s)
+        .arg("-t").arg(&dur_s)
+        .arg("-i").arg(input)
+        .arg("-vf").arg(format!("{},palettegen", video_filter))
+        .arg("-y")
+        .arg(&palette_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    
+    let palette_output = palette_cmd.output().context("Palette generation failed")?;
+    if !palette_output.status.success() {
+        bail!("ffmpeg palette generation failed: {}", String::from_utf8_lossy(&palette_output.stderr));
+    }
+    
+    // Step 2: Generate GIF with palette
+    debug!("Encoding GIF with palette");
+    let mut gif_cmd = Command::new("ffmpeg");
+    gif_cmd
+        .arg("-ss").arg(&start_s)
+        .arg("-t").arg(&dur_s)
+        .arg("-i").arg(input)
+        .arg("-i").arg(&palette_path)
+        .arg("-lavfi").arg(format!("{} [x]; [x][1:v] paletteuse", video_filter));
+    
+    // Handle loop mode
+    match loop_mode {
+        LoopMode::Once => { gif_cmd.arg("-loop").arg("-1"); },
+        _ => { gif_cmd.arg("-loop").arg("0"); },
+    };
+    
+    gif_cmd
+        .arg("-y")
+        .arg(output)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    
+    let gif_output = gif_cmd.output().context("GIF encoding failed")?;
+    if !gif_output.status.success() {
+        bail!("ffmpeg GIF encoding failed: {}", String::from_utf8_lossy(&gif_output.stderr));
+    }
+    
+    // TODO: Handle ping-pong loop mode (needs frame reversal)
+    if matches!(loop_mode, LoopMode::Pingpong) {
+        warn!("Ping-pong loop mode not yet implemented for GIF");
+    }
+    
+    Ok(())
+}
+/// Encode MP4 using ffmpeg (with quality mapping to CRF)
+async fn encode_mp4(
+    input: &Path,
+    trim: &TrimRange,
+    fps: u32,
+    scale_px: Option<u32>,
+    quality: f32,
+    captions: &[Caption],
+    output: &Path,
+) -> Result<()> {
+    // Map quality (0.0-1.0) to CRF (51-18, lower is better)
+    let crf = (51.0 - (quality * 33.0)).round() as u32;
+    
+    let start_s = ms_to_secs(trim.start_ms);
+    let dur_s = ms_to_secs(trim.end_ms.saturating_sub(trim.start_ms));
+    
+    let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg
+        .arg("-ss").arg(&start_s)
+        .arg("-t").arg(&dur_s)
+        .arg("-i").arg(input)
+        .arg("-vf").arg(build_video_filter(fps, scale_px, captions))
+        .arg("-c:v").arg("libx264")
+        .arg("-preset").arg("medium")
+        .arg("-crf").arg(crf.to_string())
+        .arg("-pix_fmt").arg("yuv420p")
+        .arg("-movflags").arg("+faststart")
+        .arg("-y")
+        .arg(output)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    
+    debug!("Running: {:?}", ffmpeg);
+    let output_result = ffmpeg.output().context("ffmpeg MP4 encoding failed")?;
+    
+    if !output_result.status.success() {
+        let stderr = String::from_utf8_lossy(&output_result.stderr);
+        bail!("ffmpeg MP4 encoding failed: {}", stderr);
+    }
+    
+    Ok(())
+}
+
+/// Encode WebP using ffmpeg
+async fn encode_webp(
+    input: &Path,
+    trim: &TrimRange,
+    fps: u32,
+    scale_px: Option<u32>,
+    quality: f32,
+    lossless: bool,
+    captions: &[Caption],
+    output: &Path,
+) -> Result<()> {
+    let start_s = ms_to_secs(trim.start_ms);
+    let dur_s = ms_to_secs(trim.end_ms.saturating_sub(trim.start_ms));
+    
+    let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg
+        .arg("-ss").arg(&start_s)
+        .arg("-t").arg(&dur_s)
+        .arg("-i").arg(input)
+        .arg("-vf").arg(build_video_filter(fps, scale_px, captions));
+    
+    if lossless {
+        ffmpeg.arg("-lossless").arg("1");
+    } else {
+        ffmpeg.arg("-quality").arg((quality * 100.0).round().to_string());
+    }
+    
+    ffmpeg
+        .arg("-loop").arg("0") // Infinite loop
+        .arg("-y")
+        .arg(output)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    
+    debug!("Running: {:?}", ffmpeg);
+    let output_result = ffmpeg.output().context("ffmpeg WebP encoding failed")?;
+    
+    if !output_result.status.success() {
+        let stderr = String::from_utf8_lossy(&output_result.stderr);
+        bail!("ffmpeg WebP encoding failed: {}", stderr);
+    }
+    
+    Ok(())
+}
+
+/// Build ffmpeg video filter string (fps, scale, captions)
+fn build_video_filter(fps: u32, scale_px: Option<u32>, captions: &[Caption]) -> String {
+    let mut filters = vec![format!("fps={}", fps)];
+    
+    if let Some(width) = scale_px {
+        filters.push(format!("scale={}:-1:flags=lanczos", width));
+    }
+    
+    // Add caption filters after scaling so expressions use final main_w/main_h
+    if !captions.is_empty() {
+        filters.push(build_filter_chain_expr(captions));
+    }
+    
+    filters.join(",")
+}
+
+fn write_event(stdout: &mut io::Stdout, event: &EncoderEvent) -> Result<()> {
+    let json = to_jsonl(event).context("Failed to serialize event")?;
+    stdout.write_all(json.as_bytes()).context("Failed to write to stdout")?;
+    stdout.flush().context("Failed to flush stdout")?;
+    Ok(())
+}
+
+/// Convert milliseconds to seconds as decimal string for ffmpeg
+#[inline]
+fn ms_to_secs(ms: u64) -> String {
+    format!("{:.3}", (ms as f64) / 1000.0)
+}
+
+================================================================================
+FILE: core/protocol/Cargo.toml
+================================================================================
+[package]
+name = "mandygif-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+================================================================================
+FILE: core/protocol/src/lib.rs
+================================================================================
+//! JSONL protocol for IPC between UI, recorder, and encoder processes.
+//! 
+//! Version: 1
+//! All messages are newline-delimited JSON for easy parsing and logging.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Protocol version - increment when breaking changes occur
+pub const PROTOCOL_VERSION: u32 = 1;
+
+// ============================================================================
+// RECORDER PROTOCOL
+// ============================================================================
+
+/// Commands sent to recorder process
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "cmd", rename_all = "lowercase")]
+pub enum RecorderCommand {
+    Start {
+        region: CaptureRegion,
+        fps: u32,
+        #[serde(default)]
+        cursor: bool,
+        out: PathBuf,
+    },
+    Stop,
+}
+
+/// Events emitted by recorder process
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "event", rename_all = "lowercase")]
+pub enum RecorderEvent {
+    Started {
+        pts_ms: u64,
+    },
+    Progress {
+        pts_ms: u64,
+    },
+    Stopped {
+        duration_ms: u64,
+        path: PathBuf,
+    },
+    Error {
+        kind: ErrorKind,
+        hint: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CaptureRegion {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+// ============================================================================
+// ENCODER PROTOCOL
+// ============================================================================
+
+/// Commands sent to encoder process
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "cmd", rename_all = "lowercase")]
+pub enum EncoderCommand {
+    Gif {
+        #[serde(rename = "in")]
+        input: PathBuf,
+        trim: TrimRange,
+        fps: u32,
+        scale_px: Option<u32>,
+        #[serde(rename = "loop")]
+        loop_mode: LoopMode,
+        captions: Vec<Caption>,
+        out: PathBuf,
+    },
+    Mp4 {
+        #[serde(rename = "in")]
+        input: PathBuf,
+        trim: TrimRange,
+        fps: u32,
+        scale_px: Option<u32>,
+        quality: f32, // 0.0 - 1.0, maps to CRF
+        captions: Vec<Caption>,
+        out: PathBuf,
+    },
+    Webp {
+        #[serde(rename = "in")]
+        input: PathBuf,
+        trim: TrimRange,
+        fps: u32,
+        scale_px: Option<u32>,
+        quality: f32,
+        lossless: bool,
+        captions: Vec<Caption>,
+        out: PathBuf,
+    },
+}
+
+/// Events emitted by encoder process
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "event", rename_all = "lowercase")]
+pub enum EncoderEvent {
+    Progress {
+        percent: u32, // 0-100
+    },
+    Done {
+        path: PathBuf,
+    },
+    Error {
+        kind: ErrorKind,
+        hint: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrimRange {
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LoopMode {
+    Normal,
+    Pingpong,
+    Once,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Caption {
+    pub text: String,
+    pub font: String,
+    pub style: CaptionStyle,
+    pub rect: CaptionRect,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    #[serde(default)]
+    pub animation: CaptionAnimation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CaptionStyle {
+    pub color: String,      // hex: "#ffffff"
+    pub stroke: String,     // hex with alpha: "#0008"
+    pub size: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CaptionRect {
+    pub x: f32,      // 0.0 - 1.0 (proportional)
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptionAnimation {
+    #[default]
+    None,
+    Fade,
+}
+
+// ============================================================================
+// SHARED TYPES
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+    PermissionDenied,
+    InvalidInput,
+    EncodingFailed,
+    IoError,
+    UnsupportedPlatform,
+}
+
+// ============================================================================
+// PARSING HELPERS
+// ============================================================================
+
+/// Parse a JSONL message into a typed command/event
+pub fn parse_recorder_command(line: &str) -> Result<RecorderCommand, serde_json::Error> {
+    serde_json::from_str(line)
+}
+
+pub fn parse_recorder_event(line: &str) -> Result<RecorderEvent, serde_json::Error> {
+    serde_json::from_str(line)
+}
+
+pub fn parse_encoder_command(line: &str) -> Result<EncoderCommand, serde_json::Error> {
+    serde_json::from_str(line)
+}
+
+pub fn parse_encoder_event(line: &str) -> Result<EncoderEvent, serde_json::Error> {
+    serde_json::from_str(line)
+}
+
+/// Serialize a command/event to JSONL format
+pub fn to_jsonl<T: Serialize>(msg: &T) -> Result<String, serde_json::Error> {
+    let mut json = serde_json::to_string(msg)?;
+    json.push('\n');
+    Ok(json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_recorder_start_roundtrip() {
+        let cmd = RecorderCommand::Start {
+            region: CaptureRegion { x: 128, y: 96, width: 640, height: 360 },
+            fps: 30,
+            cursor: true,
+            out: PathBuf::from("/tmp/clip.mp4"),
+        };
+        
+        let jsonl = to_jsonl(&cmd).unwrap();
+        let parsed = parse_recorder_command(&jsonl).unwrap();
+        assert_eq!(cmd, parsed);
+    }
+
+    #[test]
+    fn test_encoder_gif_roundtrip() {
+        let cmd = EncoderCommand::Gif {
+            input: PathBuf::from("/tmp/clip.mp4"),
+            trim: TrimRange { start_ms: 200, end_ms: 5200 },
+            fps: 15,
+            scale_px: Some(480),
+            loop_mode: LoopMode::Pingpong,
+            captions: vec![],
+            out: PathBuf::from("/tmp/out.gif"),
+        };
+        
+        let jsonl = to_jsonl(&cmd).unwrap();
+        let parsed = parse_encoder_command(&jsonl).unwrap();
+        assert_eq!(cmd, parsed);
+    }
+}
+
+================================================================================
+FILE: core/recorder-linux/Cargo.toml
+================================================================================
+[package]
+name = "mandygif-recorder-linux"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "recorder-linux"
+path = "src/main.rs"
+
+[dependencies]
+mandygif-protocol = { path = "../protocol" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+
+# GStreamer bindings
+gstreamer = "0.22"
+gstreamer-app = "0.22"
+gstreamer-video = "0.22"
+
+# PipeWire/Portal (optional for Wayland)
+ashpd = { version = "0.8", default-features = false, features = ["tokio", "pipewire"] }
+
+================================================================================
+FILE: core/recorder-linux/src/main.rs
+================================================================================
+//! Linux screen recorder using GStreamer + X11/XWayland capture
+//! 
+//! Uses ximagesrc for screen capture, x264 encoding to MP4.
+//! Excludes overlay window from capture.
+
+use anyhow::{Context, Result};
+use mandygif_protocol::*;
+use gstreamer as gst;
+use gstreamer::prelude::*;
+use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tracing::{info, error, debug};
+
+/// Shared state between command handler and async tasks
+struct RecorderState {
+    pipeline: Option<gst::Pipeline>,
+    output_path: Option<PathBuf>,
+    start_time: Option<std::time::Instant>,
+}
+
+impl RecorderState {
+    fn new() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self {
+            pipeline: None,
+            output_path: None,
+            start_time: None,
+        }))
+    }
+}
+
+/// Validate recording parameters - Rule 5: assertions
+fn validate_region(region: &CaptureRegion) -> Result<()> {
+    if region.width == 0 || region.height == 0 {
+        return Err(anyhow::anyhow!("Invalid region dimensions"));
+    }
+    if region.width > 3840 || region.height > 2160 {
+        return Err(anyhow::anyhow!("Region too large"));
+    }
+    if region.x < 0 || region.y < 0 {
+        return Err(anyhow::anyhow!("Negative coordinates not allowed"));
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    const MAX_ITERATIONS: u32 = 10000;  // Rule 2: bounded loop
+    
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into())
+        )
+        .init();
+
+    gst::init().context("Failed to initialize GStreamer")?;
+    
+    info!("recorder-linux starting (protocol v{})", PROTOCOL_VERSION);
+    info!("Using GStreamer version {}", gst::version_string());
+
+    let state = RecorderState::new();
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let mut iteration_count = 0u32;
+    
+    // Rule 2: bounded loop with explicit counter
+    for line in stdin.lock().lines() {
+        iteration_count += 1;
+        if iteration_count >= MAX_ITERATIONS {
+            error!("Maximum iterations reached, exiting");
+            break;
+        }
+        
+        let line = line.context("Failed to read stdin")?;
+        debug!("Received: {}", line);
+        
+        match parse_recorder_command(&line) {
+            Ok(RecorderCommand::Start { region, fps, cursor, out }) => {
+                info!(
+                    "Starting capture: region={}x{}+{}+{}, fps={}, cursor={}, output={}",
+                    region.width, region.height, region.x, region.y, fps, cursor, out.display()
+                );
+                
+                // Rule 5: validate inputs
+                if let Err(e) = validate_region(&region) {
+                    let event = RecorderEvent::Error {
+                        kind: ErrorKind::InvalidInput,
+                        hint: format!("Invalid region: {}", e),
+                    };
+                    write_event(&mut stdout, &event)?;
+                    continue;
+                }
+                
+                match start_recording(&state, region, fps, cursor, out.clone()) {
+                    Ok(()) => {
+                        let event = RecorderEvent::Started { pts_ms: 0 };
+                        write_event(&mut stdout, &event)?;
+                        
+                        // Start progress reporter in background thread
+                        spawn_progress_reporter(state.clone());
+                    }
+                    Err(e) => {
+                        error!("Failed to start recording: {:#}", e);
+                        let event = RecorderEvent::Error {
+                            kind: ErrorKind::EncodingFailed,
+                            hint: format!("Could not start GStreamer pipeline: {}", e),
+                        };
+                        write_event(&mut stdout, &event)?;
+                    }
+                }
+            }
+            
+            Ok(RecorderCommand::Stop) => {
+                info!("Stop command received");
+                
+                match stop_recording(&state) {
+                    Ok((duration_ms, path)) => {
+                        info!("Recording stopped: duration={}ms, saved to {}", 
+                            duration_ms, path.display());
+                        let event = RecorderEvent::Stopped { duration_ms, path };
+                        write_event(&mut stdout, &event)?;
+                    }
+                    Err(e) => {
+                        error!("Failed to stop recording: {:#}", e);
+                        let event = RecorderEvent::Error {
+                            kind: ErrorKind::EncodingFailed,
+                            hint: format!("Error stopping pipeline: {}", e),
+                        };
+                        write_event(&mut stdout, &event)?;
+                    }
+                }
+                
+                break;
+            }
+            
+            Err(e) => {
+                error!("Invalid command: {} (error: {})", line, e);
+                let event = RecorderEvent::Error {
+                    kind: ErrorKind::InvalidInput,
+                    hint: format!("Could not parse command: {}", e),
+                };
+                write_event(&mut stdout, &event)?;
+            }
+        }
+    }
+    
+    info!("Recorder shutting down");
+    Ok(())
+}
+
+fn start_recording(
+    state: &Arc<Mutex<RecorderState>>,
+    region: CaptureRegion,
+    fps: u32,
+    cursor: bool,
+    output_path: PathBuf,
+) -> Result<()> {
+    // Rule 7: validate FPS
+    let fps = if fps > 0 && fps <= 60 { fps } else { 30 };
+    
+    // Build pipeline with qtmux for better MP4 muxing
+    let pipeline_desc = format!(
+        "ximagesrc startx={} starty={} endx={} endy={} use-damage=false show-pointer={} ! \
+         video/x-raw,framerate={}/1 ! \
+         videoconvert ! \
+         video/x-raw,format=I420 ! \
+         x264enc speed-preset=ultrafast tune=zerolatency ! \
+         h264parse ! \
+         qtmux name=mux ! \
+         filesink location={} sync=false",
+        region.x,
+        region.y,
+        region.x + region.width as i32 - 1,
+        region.y + region.height as i32 - 1,
+        cursor,
+        fps,
+        output_path.display()
+    );
+    
+    debug!("GStreamer pipeline: {}", pipeline_desc);
+    
+    let pipeline = gst::parse::launch(&pipeline_desc)
+        .context("Failed to create GStreamer pipeline")?
+        .dynamic_cast::<gst::Pipeline>()
+        .map_err(|_| anyhow::anyhow!("Pipeline is not a gst::Pipeline"))?;
+    
+    // Set pipeline to playing state
+    pipeline.set_state(gst::State::Playing)
+        .context("Failed to set pipeline to PLAYING state")?;
+    
+    let mut state_guard = state.lock().unwrap();
+    state_guard.pipeline = Some(pipeline);
+    state_guard.output_path = Some(output_path);
+    state_guard.start_time = Some(std::time::Instant::now());
+    
+    Ok(())
+}
+
+fn spawn_progress_reporter(state: Arc<Mutex<RecorderState>>) {
+    const MAX_REPORTS: u32 = 7200;  // Rule 2: max 1 hour at 500ms intervals
+    
+    std::thread::spawn(move || {
+        let mut report_count = 0u32;
+        
+        // Rule 2: bounded loop
+        while report_count < MAX_REPORTS {
+            report_count += 1;
+            std::thread::sleep(Duration::from_millis(500));
+            
+            let state_guard = state.lock().unwrap();
+            
+            // Calculate duration from start time
+            let duration_ms = if let Some(start_time) = state_guard.start_time {
+                start_time.elapsed().as_millis() as u64
+            } else {
+                0
+            };
+            
+            // Check if pipeline still exists (stopped if None)
+            if state_guard.pipeline.is_none() {
+                break;
+            }
+            
+            drop(state_guard);
+            
+            let event = RecorderEvent::Progress {
+                pts_ms: duration_ms,
+            };
+            
+            // Rule 7: check write result - write to stdout directly
+            if let Ok(json) = to_jsonl(&event) {
+                use std::io::Write;
+                let mut stdout = io::stdout();
+                if stdout.write_all(json.as_bytes()).is_err() {
+                    break;
+                }
+                if stdout.flush().is_err() {
+                    break;
+                }
+            }
+        }
+        debug!("Progress reporter thread exiting");
+    });
+}
+
+fn stop_recording(state: &Arc<Mutex<RecorderState>>) -> Result<(u64, PathBuf)> {
+    let mut state_guard = state.lock().unwrap();
+    
+    let pipeline = state_guard.pipeline.take()
+        .context("No active recording to stop")?;
+    
+    let output_path = state_guard.output_path.take()
+        .context("No output path stored")?;
+    
+    // Calculate final duration
+    let duration_ms = if let Some(start_time) = state_guard.start_time {
+        start_time.elapsed().as_millis() as u64
+    } else {
+        0
+    };
+    
+    // Clear start time to stop progress reporter
+    state_guard.start_time = None;
+    drop(state_guard);
+    
+    debug!("Sending EOS to finalize MP4 file");
+    pipeline.send_event(gst::event::Eos::new());
+    
+    // Wait for EOS with proper timeout
+    if let Some(bus) = pipeline.bus() {
+        // Wait up to 5 seconds for EOS
+        let timeout = gst::ClockTime::from_seconds(5);
+        
+        loop {
+            if let Some(msg) = bus.timed_pop_filtered(
+                timeout,
+                &[gst::MessageType::Eos, gst::MessageType::Error]
+            ) {
+                match msg.view() {
+                    gst::MessageView::Eos(_) => {
+                        debug!("EOS received, MP4 finalized");
+                        break;
+                    }
+                    gst::MessageView::Error(err) => {
+                        error!("Pipeline error: {} ({:?})", err.error(), err.debug());
+                        break;
+                    }
+                    _ => {}
+                }
+            } else {
+                error!("Timeout waiting for EOS");
+                break;
+            }
+        }
+    }
+    
+    // Ensure pipeline is stopped
+    pipeline.set_state(gst::State::Null)
+        .context("Failed to set pipeline to NULL state")?;
+    
+    // Give filesystem time to sync
+    std::thread::sleep(Duration::from_millis(100));
+    
+    // Rule 5: validate output
+    if duration_ms < 500 {
+        error!("Warning: Recording very short ({}ms), file may be corrupt", duration_ms);
+    }
+    
+    Ok((duration_ms, output_path))
+}
+
+fn write_event(stdout: &mut io::Stdout, event: &RecorderEvent) -> Result<()> {
+    let json = to_jsonl(event).context("Failed to serialize event")?;
+    stdout.write_all(json.as_bytes()).context("Failed to write to stdout")?;
+    stdout.flush().context("Failed to flush stdout")?;
+    Ok(())
+}
+
+================================================================================
+FILE: core/recorder-mac/Cargo.toml
+================================================================================
+[package]
+name = "mandygif-recorder-mac"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "recorder-mac"
+path = "src/main.rs"
+
+[dependencies]
+mandygif-protocol = { path = "../protocol" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS-specific dependencies will go here:
+# screencapturekit (when bindings exist)
+# cocoa, core-foundation, etc.
+
+================================================================================
+FILE: core/recorder-mac/src/main.rs
+================================================================================
+//! macOS screen recorder using ScreenCaptureKit + VideoToolbox
+//! 
+//! TODO: Implement SCStream capture with VTCompressionSession encoding
+
+use anyhow::Result;
+use mandygif_protocol::*;
+use std::io::{self, BufRead, Write};
+use tracing::{info, error};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        eprintln!("recorder-mac only runs on macOS");
+        std::process::exit(1);
+    }
+
+    info!("recorder-mac starting (STUB), protocol v{}", PROTOCOL_VERSION);
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    
+    for line in stdin.lock().lines() {
+        let line = line?;
+        
+        if let Ok(RecorderCommand::Start { .. }) = parse_recorder_command(&line) {
+            let err_event = RecorderEvent::Error {
+                kind: ErrorKind::UnsupportedPlatform,
+                hint: "macOS recorder not yet implemented".into(),
+            };
+            stdout.write_all(to_jsonl(&err_event)?.as_bytes())?;
+            stdout.flush()?;
+            break;
+        }
+    }
+    
+    Ok(())
+}
+
+================================================================================
+FILE: core/recorder-win/Cargo.toml
+================================================================================
+[package]
+name = "mandygif-recorder-win"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "recorder-win"
+path = "src/main.rs"
+
+[dependencies]
+mandygif-protocol = { path = "../protocol" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows-specific dependencies will go here:
+# windows crate for WGC/DXGI APIs
+
+================================================================================
+FILE: core/recorder-win/src/main.rs
+================================================================================
+//! Windows screen recorder using Windows.Graphics.Capture + Media Foundation
+//! 
+//! TODO: Implement WGC + MF H.264 encoding
+
+use anyhow::Result;
+use mandygif_protocol::*;
+use std::io::{self, BufRead, Write};
+use tracing::{info, error};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        eprintln!("recorder-win only runs on Windows");
+        std::process::exit(1);
+    }
+
+    info!("recorder-win starting (STUB), protocol v{}", PROTOCOL_VERSION);
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    
+    for line in stdin.lock().lines() {
+        let line = line?;
+        
+        if let Ok(RecorderCommand::Start { .. }) = parse_recorder_command(&line) {
+            let err_event = RecorderEvent::Error {
+                kind: ErrorKind::UnsupportedPlatform,
+                hint: "Windows recorder not yet implemented".into(),
+            };
+            stdout.write_all(to_jsonl(&err_event)?.as_bytes())?;
+            stdout.flush()?;
+            break;
+        }
+    }
+    
+    Ok(())
+}
+
+================================================================================
+FILE: core/region-selector/Cargo.toml
+================================================================================
+[package]
+name = "mandygif-region-selector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "region-selector"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slint = "1.4"
+
+[build-dependencies]
+slint-build = "1.4"
+
+================================================================================
+FILE: core/region-selector/build.rs
+================================================================================
+fn main() {
+    slint_build::compile("ui/selector.slint").unwrap();
+}
+
+================================================================================
+FILE: core/region-selector/src/main.rs
+================================================================================
+//! Region selector - transparent overlay for capture area selection
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use slint::ComponentHandle;
+use std::io::Write;
+
+slint::include_modules!();
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Region {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+fn main() -> Result<()> {
+    let selector = RegionSelector::new()?;
+    
+    // Start at reasonable centered size
+    selector.set_sel_x(320.0);
+    selector.set_sel_y(180.0);
+    selector.set_sel_width(1280.0);
+    selector.set_sel_height(720.0);
+    
+    let selector_weak = selector.as_weak();
+    selector.on_confirm(move || {
+        if let Some(s) = selector_weak.upgrade() {
+            let region = Region {
+                x: s.get_sel_x() as i32,
+                y: s.get_sel_y() as i32,
+                width: s.get_sel_width() as u32,
+                height: s.get_sel_height() as u32,
+            };
+            
+            // Output as JSON
+            if let Ok(json) = serde_json::to_string(&region) {
+                println!("{}", json);
+                let _ = std::io::stdout().flush();
+            }
+            
+            slint::quit_event_loop().ok();
+        }
+    });
+    
+    selector.on_cancel(|| {
+        std::process::exit(1);
+    });
+    
+    selector.run()?;
+    
+    Ok(())
+}
+
+================================================================================
+FILE: core/region-selector/ui/selector.slint
+================================================================================
+export component RegionSelector inherits Window {
+    width: 3840px;
+    height: 2160px;
+    always-on-top: true;
+    no-frame: true;
+    
+    in-out property <length> sel-x: 0px;
+    in-out property <length> sel-y: 0px;
+    in-out property <length> sel-width: 3840px;
+    in-out property <length> sel-height: 2160px;
+    in-out property <string> locked-aspect: "";  // "16:9", "4:3", "1:1", "21:9", ""
+    property <bool> editing-width: false;
+    property <bool> editing-height: false;
+    property <string> width-input: "1280";
+    property <string> height-input: "720";
+    
+    callback confirm();
+    callback cancel();
+    
+    background: transparent;
+    
+    // Helper to apply aspect ratio immediately
+    function apply-aspect-ratio(ratio: string) {
+        if (ratio == "16:9") {
+            sel-height = sel-width * 9 / 16;
+        } else if (ratio == "4:3") {
+            sel-height = sel-width * 3 / 4;
+        } else if (ratio == "1:1") {
+            sel-height = sel-width;
+        } else if (ratio == "21:9") {
+            sel-height = sel-width * 9 / 21;
+        }
+    }
+    
+    // Selection box
+    Rectangle {
+        x: sel-x;
+        y: sel-y;
+        width: sel-width;
+        height: sel-height;
+        
+        // Colored semi-transparent overlay inside frame
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: #BBF4510F;
+            border-width: 1px;
+            border-color: #69F451;
+        }
+        
+        // Top bar
+        Rectangle {
+            y: -40px;
+            width: parent.width;
+            height: 40px;
+            background: #1a1a1a;
+            border-top-left-radius: 10px;
+            border-top-right-radius: 10px;
+            
+            // Width input (absolute positioned)
+            width-edit := TouchArea {
+                x: 8px;
+                y: 8px;
+                width: 50px;
+                height: 24px;
+                z: 10;
+                
+                Rectangle {
+                    background: width-edit.has-hover ? #2a2a2a : transparent;
+                    border-radius: 3px;
+                    border-width: root.editing-width ? 1px : 0px;
+                    border-color: #69F451;
+                    
+                    if !root.editing-width: Text {
+                        text: round(sel-width / 1px);
+                        color: width-edit.has-hover ? #69F451 : white;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    if root.editing-width: TextInput {
+                        text <=> root.width-input;
+                        color: #69F451;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        
+                        accepted => {
+                            sel-width = max(200px, self.text.to-float() * 1px);
+                            if (locked-aspect != "") {
+                                root.apply-aspect-ratio(locked-aspect);
+                            }
+                            root.editing-width = false;
+                        }
+                    }
+                }
+                
+                clicked => {
+                    root.editing-height = false;
+                    root.width-input = round(sel-width / 1px);
+                    root.editing-width = true;
+                }
+            }
+            
+            // × separator
+            Text {
+                x: 62px;
+                y: 8px;
+                text: "×";
+                color: #666;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+            
+            // Height input (absolute positioned)
+            height-edit := TouchArea {
+                x: 74px;
+                y: 8px;
+                width: 50px;
+                height: 24px;
+                z: 10;
+                
+                Rectangle {
+                    background: height-edit.has-hover ? #2a2a2a : transparent;
+                    border-radius: 3px;
+                    border-width: root.editing-height ? 1px : 0px;
+                    border-color: #69F451;
+                    
+                    if !root.editing-height: Text {
+                        text: round(sel-height / 1px);
+                        color: height-edit.has-hover ? #69F451 : white;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    if root.editing-height: TextInput {
+                        text <=> root.height-input;
+                        color: #69F451;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        
+                        accepted => {
+                            sel-height = max(100px, self.text.to-float() * 1px);
+                            if (locked-aspect != "") {
+                                root.apply-aspect-ratio(locked-aspect);
+                            }
+                            root.editing-height = false;
+                        }
+                    }
+                }
+                
+                clicked => {
+                    root.editing-width = false;
+                    root.height-input = round(sel-height / 1px);
+                    root.editing-height = true;
+                }
+            }
+            
+            // Divider line
+            Rectangle {
+                x: 132px;
+                y: 12px;
+                width: 1px;
+                height: 16px;
+                background: #444;
+            }
+            
+            // Aspect ratio buttons (absolute positioned)
+            aspect-16-9 := TouchArea {
+                x: 145px;
+                y: 8px;
+                width: 50px;
+                height: 24px;
+                z: 10;
+                
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: aspect-16-9.pressed ? #3a3a3a : (locked-aspect == "16:9" ? #69F45133 : (aspect-16-9.has-hover ? #2a2a2a : transparent));
+                    border-radius: 4px;
+                    border-width: locked-aspect == "16:9" ? 1px : 0px;
+                    border-color: #69F451;
+                    
+                    Text {
+                        text: locked-aspect == "16:9" ? "🔒 16:9" : "16:9";
+                        color: locked-aspect == "16:9" ? #69F451 : (aspect-16-9.has-hover ? #69F451 : #ccc);
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                
+                clicked => {
+                    if (locked-aspect == "16:9") {
+                        locked-aspect = "";
+                    } else {
+                        locked-aspect = "16:9";
+                        root.apply-aspect-ratio("16:9");
+                    }
+                }
+            }
+            
+            aspect-4-3 := TouchArea {
+                x: 203px;
+                y: 8px;
+                width: 45px;
+                height: 24px;
+                z: 10;
+                
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: aspect-4-3.pressed ? #3a3a3a : (locked-aspect == "4:3" ? #69F45133 : (aspect-4-3.has-hover ? #2a2a2a : transparent));
+                    border-radius: 4px;
+                    border-width: locked-aspect == "4:3" ? 1px : 0px;
+                    border-color: #69F451;
+                    
+                    Text {
+                        text: locked-aspect == "4:3" ? "🔒 4:3" : "4:3";
+                        color: locked-aspect == "4:3" ? #69F451 : (aspect-4-3.has-hover ? #69F451 : #ccc);
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                
+                clicked => {
+                    if (locked-aspect == "4:3") {
+                        locked-aspect = "";
+                    } else {
+                        locked-aspect = "4:3";
+                        root.apply-aspect-ratio("4:3");
+                    }
+                }
+            }
+            
+            aspect-1-1 := TouchArea {
+                x: 256px;
+                y: 8px;
+                width: 40px;
+                height: 24px;
+                z: 10;
+                
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: aspect-1-1.pressed ? #3a3a3a : (locked-aspect == "1:1" ? #69F45133 : (aspect-1-1.has-hover ? #2a2a2a : transparent));
+                    border-radius: 4px;
+                    border-width: locked-aspect == "1:1" ? 1px : 0px;
+                    border-color: #69F451;
+                    
+                    Text {
+                        text: locked-aspect == "1:1" ? "🔒 1:1" : "1:1";
+                        color: locked-aspect == "1:1" ? #69F451 : (aspect-1-1.has-hover ? #69F451 : #ccc);
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                
+                clicked => {
+                    if (locked-aspect == "1:1") {
+                        locked-aspect = "";
+                    } else {
+                        locked-aspect = "1:1";
+                        root.apply-aspect-ratio("1:1");
+                    }
+                }
+            }
+            
+            aspect-21-9 := TouchArea {
+                x: 304px;
+                y: 8px;
+                width: 50px;
+                height: 24px;
+                z: 10;
+                
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: aspect-21-9.pressed ? #3a3a3a : (locked-aspect == "21:9" ? #69F45133 : (aspect-21-9.has-hover ? #2a2a2a : transparent));
+                    border-radius: 4px;
+                    border-width: locked-aspect == "21:9" ? 1px : 0px;
+                    border-color: #69F451;
+                    
+                    Text {
+                        text: locked-aspect == "21:9" ? "🔒 21:9" : "21:9";
+                        color: locked-aspect == "21:9" ? #69F451 : (aspect-21-9.has-hover ? #69F451 : #ccc);
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                
+                clicked => {
+                    if (locked-aspect == "21:9") {
+                        locked-aspect = "";
+                    } else {
+                        locked-aspect = "21:9";
+                        root.apply-aspect-ratio("21:9");
+                    }
+                }
+            }
+            
+            // Close button (absolute positioned top-right)
+            Rectangle {
+                x: parent.width - 32px;
+                y: 8px;
+                width: 24px;
+                height: 24px;
+                background: #cc0000;
+                border-radius: 4px;
+                z: 10;
+                
+                Text {
+                    text: "✕";
+                    color: white;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.cancel(); }
+                }
+            }
+            
+            // Drag to move entire window
+            TouchArea {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                z: -1;
+                
+                property <length> offset-x;
+                property <length> offset-y;
+                
+                pointer-event(event) => {
+                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                        self.offset-x = self.mouse-x;
+                        self.offset-y = self.mouse-y;
+                    }
+                }
+                
+                moved => {
+                    if (self.pressed) {
+                        sel-x += self.mouse-x - self.offset-x;
+                        sel-y += self.mouse-y - self.offset-y;
+                    }
+                }
+            }
+        }
+        
+        // Bottom bar
+        Rectangle {
+            y: parent.height;
+            width: parent.width;
+            height: 50px;
+            background: #1a1a1a;
+            border-bottom-left-radius: 10px;
+            border-bottom-right-radius: 10px;
+            
+            HorizontalLayout {
+                padding: 10px;
+                spacing: 10px;
+                alignment: center;
+                
+                // Record button
+                Rectangle {
+                    width: 60px;
+                    height: 30px;
+                    background: #ff0000;
+                    border-radius: 15px;
+                    
+                    Text {
+                        text: "REC";
+                        color: white;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    TouchArea {
+                        clicked => { root.confirm(); }
+                    }
+                }
+            }
+        }
+        
+        // Bottom-right resize handle
+        Rectangle {
+            x: parent.width - 30px;
+            y: parent.height + 10px;
+            width: 24px;
+            height: 30px;
+            
+            Image {
+                source: @image-url("assets/6dots.svg");
+                width: 48px;
+                height: 96px;
+                x: -12px;
+                y: -33px;
+                image-fit: contain;
+                colorize: #888;
+            }
+            
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                
+                property <length> drag-start-x;
+                property <length> drag-start-y;
+                property <length> start-width;
+                property <length> start-height;
+                
+                pointer-event(event) => {
+                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                        self.drag-start-x = self.mouse-x;
+                        self.drag-start-y = self.mouse-y;
+                        self.start-width = sel-width;
+                        self.start-height = sel-height;
+                    }
+                }
+                
+                moved => {
+                    if (self.pressed) {
+                        self.start-width = max(200px, self.start-width + (self.mouse-x - self.drag-start-x));
+                        self.start-height = max(100px, self.start-height + (self.mouse-y - self.drag-start-y));
+                        
+                        if (locked-aspect == "16:9") {
+                            sel-width = self.start-width;
+                            sel-height = sel-width * 9 / 16;
+                        } else if (locked-aspect == "4:3") {
+                            sel-width = self.start-width;
+                            sel-height = sel-width * 3 / 4;
+                        } else if (locked-aspect == "1:1") {
+                            sel-width = self.start-width;
+                            sel-height = sel-width;
+                        } else if (locked-aspect == "21:9") {
+                            sel-width = self.start-width;
+                            sel-height = sel-width * 9 / 21;
+                        } else {
+                            sel-width = self.start-width;
+                            sel-height = self.start-height;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+================================================================================
+FILE: test_encoder.sh
+================================================================================
+#!/bin/bash
+set -e
+
+echo "Testing encoder with recording from recorder..."
+
+# Make sure we have a test recording
+if [ ! -f /tmp/test_recorder.mp4 ]; then
+  echo "No test recording found. Run ./test_recorder.sh first"
+  exit 1
+fi
+
+# Test 1: GIF encoding
+echo "Test 1: Encoding GIF..."
+echo '{"cmd":"gif","in":"/tmp/test_recorder.mp4","trim":{"start_ms":0,"end_ms":2700},"fps":15,"scale_px":480,"loop":"normal","captions":[],"out":"/tmp/test.gif"}' | cargo run --bin encoder --quiet 2>&1
+
+if [ -f /tmp/test.gif ]; then
+  SIZE=$(stat -c%s /tmp/test.gif 2>/dev/null || stat -f%z /tmp/test.gif)
+  echo "✓ GIF created: /tmp/test.gif (${SIZE} bytes)"
+else
+  echo "✗ GIF encoding failed"
+  exit 1
+fi
+
+# Test 2: WebP encoding
+echo "Test 2: Encoding WebP..."
+echo '{"cmd":"webp","in":"/tmp/test_recorder.mp4","trim":{"start_ms":0,"end_ms":2700},"fps":15,"scale_px":480,"quality":0.85,"lossless":false,"captions":[],"out":"/tmp/test.webp"}' | cargo run --bin encoder --quiet 2>&1
+
+if [ -f /tmp/test.webp ]; then
+  SIZE=$(stat -c%s /tmp/test.webp 2>/dev/null || stat -f%z /tmp/test.webp)
+  echo "✓ WebP created: /tmp/test.webp (${SIZE} bytes)"
+else
+  echo "✗ WebP encoding failed"
+  exit 1
+fi
+
+# Test 3: MP4 re-encoding
+echo "Test 3: Re-encoding MP4..."
+echo '{"cmd":"mp4","in":"/tmp/test_recorder.mp4","trim":{"start_ms":0,"end_ms":2700},"fps":30,"scale_px":640,"quality":0.8,"captions":[],"out":"/tmp/test_reencoded.mp4"}' | cargo run --bin encoder --quiet 2>&1
+
+if [ -f /tmp/test_reencoded.mp4 ]; then
+  SIZE=$(stat -c%s /tmp/test_reencoded.mp4 2>/dev/null || stat -f%z /tmp/test_reencoded.mp4)
+  echo "✓ MP4 created: /tmp/test_reencoded.mp4 (${SIZE} bytes)"
+else
+  echo "✗ MP4 encoding failed"
+  exit 1
+fi
+
+echo ""
+echo "✓ All encoder tests passed"
+echo "Output files:"
+echo "  - /tmp/test.gif"
+echo "  - /tmp/test.webp" 
+echo "  - /tmp/test_reencoded.mp4"
+
+================================================================================
+FILE: test_recorder.sh
+================================================================================
+#!/bin/bash
+set -e
+
+# Clean up any previous test files
+rm -f /tmp/test_recorder.mp4
+
+# Build first
+echo "Building recorder..."
+cargo build --bin recorder-linux --quiet
+
+# Run recorder with automatic start/stop
+echo "Starting 3-second test recording..."
+(
+  echo '{"cmd":"start","region":{"x":100,"y":100,"width":640,"height":480},"fps":30,"cursor":false,"out":"/tmp/test_recorder.mp4"}'
+  sleep 3
+  echo '{"cmd":"stop"}'
+) | cargo run --bin recorder-linux --quiet 2>&1
+
+# Verify the file exists and is valid
+if [ -f /tmp/test_recorder.mp4 ]; then
+  SIZE=$(stat -f%z /tmp/test_recorder.mp4 2>/dev/null || stat -c%s /tmp/test_recorder.mp4)
+  echo "✓ Recording created: /tmp/test_recorder.mp4 (${SIZE} bytes)"
+  
+  # Check if ffprobe is available
+  if command -v ffprobe &> /dev/null; then
+    echo "✓ Validating with ffprobe..."
+    ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/test_recorder.mp4
+  fi
+  
+  echo "✓ Test passed - you can play: mpv /tmp/test_recorder.mp4"
+else
+  echo "✗ Test failed - no output file created"
+  exit 1
+fi
+
+================================================================================
+FILE: ui/Cargo.toml
+================================================================================
+[package]
+name = "mandygif-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mandygif"
+path = "src/main.rs"
+
+[dependencies]
+mandygif-protocol = { path = "../core/protocol" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Slint UI framework
+slint = "1.4"
+
+[build-dependencies]
+slint-build = "1.4"
+
+================================================================================
+FILE: ui/build.rs
+================================================================================
+fn main() {
+    slint_build::compile("ui/overlay.slint").unwrap();
+}
+
+================================================================================
+FILE: ui/src/main.rs
+================================================================================
+//! MandyGIF - Unified overlay interface with integrated controls
+
+use anyhow::{Context, Result};
+use mandygif_protocol::*;
+use slint::ComponentHandle;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::mpsc;
+use tracing::{info, error, debug};
+
+slint::include_modules!();
+
+struct AppStateData {
+    recording_path: Option<PathBuf>,
+    recording_duration_ms: u64,
+    stop_tx: Option<mpsc::UnboundedSender<()>>,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into())
+        )
+        .init();
+
+    info!("MandyGIF starting - unified overlay mode");
+
+    let ui = UnifiedOverlay::new()?;
+    let state = Arc::new(Mutex::new(AppStateData {
+        recording_path: None,
+        recording_duration_ms: 0,
+        stop_tx: None,
+    }));
+
+    // Start recording callback
+    let ui_weak = ui.as_weak();
+    let state_clone = state.clone();
+    ui.on_start_recording(move || {
+        let ui = ui_weak.unwrap();
+        
+        // Check if already recording
+        if state_clone.lock().unwrap().stop_tx.is_some() {
+            info!("Already recording, ignoring start request");
+            return;
+        }
+        
+        let region = CaptureRegion {
+            x: ui.get_sel_x() as i32,
+            y: ui.get_sel_y() as i32,
+            width: ui.get_sel_width() as u32,
+            height: ui.get_sel_height() as u32,
+        };
+        
+        info!("Starting recording: {}x{} at {},{}", 
+            region.width, region.height, region.x, region.y);
+        
+        ui.set_recording(true);
+        ui.set_recording_duration_ms(0);
+        
+        // Create channel for progress updates
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+        
+        // Spawn recorder
+        let state_inner = state_clone.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_recorder(progress_tx, state_inner, region).await {
+                error!("Recorder failed: {:#}", e);
+            }
+        });
+        
+        // Spawn UI update task
+        let ui_weak_update = ui.as_weak();
+        let state_for_update = state_clone.clone();
+        tokio::spawn(async move {
+            while let Some(event) = progress_rx.recv().await {
+                let ui_clone = ui_weak_update.clone();
+                let state_clone = state_for_update.clone();
+                slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_clone.upgrade() {
+                        match event {
+                            RecorderEvent::Progress { pts_ms } => {
+                                debug!("UI: Setting recording duration to {}ms", pts_ms);
+                                ui.set_recording_duration_ms(pts_ms as i32);
+                            }
+                            RecorderEvent::Stopped { duration_ms, .. } => {
+                                ui.set_recording(false);
+                                ui.set_recording_duration_ms(duration_ms as i32);
+                                // Clear stop channel since recording is done
+                                state_clone.lock().unwrap().stop_tx = None;
+                            }
+                            RecorderEvent::Error { hint, .. } => {
+                                ui.set_recording(false);
+                                error!("Recording error: {}", hint);
+                                // Clear stop channel since recording failed
+                                state_clone.lock().unwrap().stop_tx = None;
+                            }
+                            _ => {}
+                        }
+                    }
+                }).unwrap();
+            }
+        });
+    });
+
+    // Stop recording callback
+    let state_clone = state.clone();
+    ui.on_stop_recording(move || {
+        info!("Stop recording requested");
+        
+        // Send stop signal via channel
+        if let Some(tx) = state_clone.lock().unwrap().stop_tx.as_ref() {
+            let _ = tx.send(());
+        }
+    });
+
+    // Export callback
+    let ui_weak = ui.as_weak();
+    let state_clone = state.clone();
+    ui.on_start_export(move || {
+        let ui = ui_weak.unwrap();
+        
+        let recording_path = state_clone.lock().unwrap().recording_path.clone();
+        if recording_path.is_none() {
+            error!("No recording to export");
+            return;
+        }
+        
+        let format = ui.get_export_format();
+        let fps = ui.get_export_fps();
+        let scale = ui.get_scale_width();
+        let duration_ms = ui.get_recording_duration_ms() as u64;
+        
+        info!("Exporting: format={}, fps={}, scale={}", format, fps, scale);
+        
+        let input = recording_path.unwrap();
+        tokio::spawn(async move {
+            if let Err(e) = run_encoder(
+                input, 
+                format.to_string(), 
+                fps, 
+                0, 
+                duration_ms, 
+                scale
+            ).await {
+                error!("Encoder failed: {:#}", e);
+            }
+        });
+    });
+
+    // Cancel callback - quit the app
+    ui.on_cancel(|| {
+        info!("X button clicked - exiting");
+        std::process::exit(0);  // Force exit
+    });
+
+    ui.run()?;
+    Ok(())
+}
+
+async fn run_recorder(
+    event_tx: mpsc::UnboundedSender<RecorderEvent>,
+    state: Arc<Mutex<AppStateData>>,
+    region: CaptureRegion,
+) -> Result<()> {
+    const MAX_RETRIES: u32 = 3;  // Rule 2: bounded loop
+    const MAX_DURATION_MS: u64 = 600000;  // Rule 2: 10 minute max recording
+    
+    let output_path = PathBuf::from("/tmp/mandygif_recording.mp4");
+    
+    // Rule 5: Assertions for preconditions
+    assert!(region.width > 0 && region.height > 0);
+    assert!(region.width <= 3840 && region.height <= 2160);
+    
+    let cmd = RecorderCommand::Start {
+        region,
+        fps: 30,
+        cursor: false,
+        out: output_path.clone(),
+    };
+    
+    let recorder_bin = std::env::current_exe()?
+        .parent().unwrap()
+        .join("recorder-linux");
+    
+    // Rule 7: Check path exists
+    if !recorder_bin.exists() {
+        error!("Recorder binary not found: {:?}", recorder_bin);
+        return Err(anyhow::anyhow!("Recorder binary not found"));
+    }
+    
+    let mut child = Command::new(&recorder_bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())  // Capture stderr for debugging
+        .spawn()
+        .context("Failed to spawn recorder")?;
+    
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout).lines();
+    
+    // Create stop channel
+    let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+    state.lock().unwrap().stop_tx = Some(stop_tx);
+    
+    // Send start command
+    let start_json = to_jsonl(&cmd)?;
+    stdin.write_all(start_json.as_bytes()).await?;
+    stdin.flush().await?;
+    
+    let mut stop_sent = false;
+    let mut progress_count = 0u32;  // Rule 2: bounded counter
+    
+    // Read events loop - Rule 2: bounded by MAX_DURATION_MS
+    loop {
+        if progress_count >= (MAX_DURATION_MS / 500) as u32 {  // Progress every 500ms
+            error!("Recording exceeded maximum duration");
+            break;
+        }
+        
+        tokio::select! {
+            // Check for stop signal
+            _ = stop_rx.recv() => {
+                if !stop_sent {
+                    info!("Stop signal received, sending stop command to recorder");
+                    let stop_cmd = RecorderCommand::Stop;
+                    let stop_json = to_jsonl(&stop_cmd)?;
+                    
+                    // Rule 7: Check write result
+                    if stdin.write_all(stop_json.as_bytes()).await.is_ok() {
+                        let _ = stdin.flush().await;
+                    }
+                    stop_sent = true;
+                }
+            }
+            
+            // Read recorder events with timeout
+            line = reader.next_line() => {
+                match line {
+                    Ok(Some(line)) => {
+                        if !line.starts_with('{') {
+                            debug!("Non-JSON from recorder: {}", line);
+                            continue;
+                        }
+                        
+                        match parse_recorder_event(&line) {
+                            Ok(RecorderEvent::Started { pts_ms }) => {
+                                info!("Recording started at {}ms", pts_ms);
+                                let _ = event_tx.send(RecorderEvent::Started { pts_ms });
+                            }
+                            Ok(RecorderEvent::Progress { pts_ms }) => {
+                                debug!("Progress: {}ms", pts_ms);
+                                progress_count += 1;
+                                let _ = event_tx.send(RecorderEvent::Progress { pts_ms });
+                            }
+                            Ok(RecorderEvent::Stopped { duration_ms, path }) => {
+                                info!("Recording stopped: {}ms, saved to {}", 
+                                    duration_ms, path.display());
+                                
+                                // Rule 5: Validate recording
+                                if duration_ms < 100 {
+                                    error!("Recording too short: {}ms", duration_ms);
+                                }
+                                
+                                state.lock().unwrap().recording_path = Some(path.clone());
+                                state.lock().unwrap().recording_duration_ms = duration_ms;
+                                let _ = event_tx.send(RecorderEvent::Stopped { 
+                                    duration_ms, 
+                                    path 
+                                });
+                                break;
+                            }
+                            Ok(RecorderEvent::Error { kind, hint }) => {
+                                error!("Recorder error: {:?} - {}", kind, hint);
+                                let _ = event_tx.send(RecorderEvent::Error { kind, hint });
+                                break;
+                            }
+                            Err(e) => {
+                                error!("Failed to parse recorder event: {}", e);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        info!("Recorder stdout closed");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("Error reading from recorder: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Rule 7: Ensure child process cleanup
+    let exit_status = child.wait().await?;
+    if !exit_status.success() {
+        error!("Recorder exited with error: {:?}", exit_status);
+    }
+    
+    Ok(())
+}
+
+async fn run_encoder(
+    input: PathBuf,
+    format: String,
+    fps: i32,
+    trim_start_ms: u64,
+    trim_end_ms: u64,
+    scale_px: i32,
+) -> Result<()> {
+    let output_path = PathBuf::from(format!("/tmp/mandygif_export.{}", format));
+    
+    let cmd = match format.as_str() {
+        "gif" => EncoderCommand::Gif {
+            input: input.clone(),
+            trim: TrimRange { start_ms: trim_start_ms, end_ms: trim_end_ms },
+            fps: fps as u32,
+            scale_px: Some(scale_px as u32),
+            loop_mode: LoopMode::Normal,
+            captions: vec![],
+            out: output_path.clone(),
+        },
+        "webp" => EncoderCommand::Webp {
+            input: input.clone(),
+            trim: TrimRange { start_ms: trim_start_ms, end_ms: trim_end_ms },
+            fps: fps as u32,
+            scale_px: Some(scale_px as u32),
+            quality: 0.85,
+            lossless: false,
+            captions: vec![],
+            out: output_path.clone(),
+        },
+        _ => EncoderCommand::Mp4 {
+            input: input.clone(),
+            trim: TrimRange { start_ms: trim_start_ms, end_ms: trim_end_ms },
+            fps: fps as u32,
+            scale_px: Some(scale_px as u32),
+            quality: 0.8,
+            captions: vec![],
+            out: output_path.clone(),
+        },
+    };
+    
+    let encoder_bin = std::env::current_exe()?
+        .parent().unwrap()
+        .join("encoder");
+    
+    let mut child = Command::new(&encoder_bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("Failed to spawn encoder")?;
+    
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout).lines();
+    
+    // Send encode command
+    let cmd_json = to_jsonl(&cmd)?;
+    stdin.write_all(cmd_json.as_bytes()).await?;
+    drop(stdin);
+    
+    // Read events
+    while let Some(line) = reader.next_line().await? {
+        debug!("Encoder: {}", line);
+        
+        if !line.starts_with('{') {
+            continue;
+        }
+        
+        match parse_encoder_event(&line) {
+            Ok(EncoderEvent::Progress { percent }) => {
+                info!("Encoding progress: {}%", percent);
+            }
+            Ok(EncoderEvent::Done { path }) => {
+                info!("Export complete: {}", path.display());
+                break;
+            }
+            Ok(EncoderEvent::Error { kind, hint }) => {
+                error!("Encoder error: {:?} - {}", kind, hint);
+                break;
+            }
+            Err(e) => {
+                error!("Failed to parse encoder event: {}", e);
+            }
+        }
+    }
+    
+    let _ = child.wait().await;
+    Ok(())
+}
+
+================================================================================
+FILE: ui/ui/main.slint
+================================================================================
+import { Button, HorizontalBox, VerticalBox, ComboBox, Slider, LineEdit } from "std-widgets.slint";
+
+export struct Region {
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+}
+
+export enum AppState {
+    idle,
+    recording,
+    editing,
+    exporting,
+}
+
+export component AppWindow inherits Window {
+    // Window config
+    title: "MandyGIF";
+    width: 400px;
+    height: 600px;
+    visible: false;
+    
+    // State
+    in-out property <AppState> state: AppState.idle;
+    in-out property <Region> capture-region: { x: 100, y: 100, width: 800, height: 600 };
+    in-out property <int> recording-duration-ms: 0;
+    in-out property <string> status-text: "Ready to record";
+    
+    // Export settings
+    in-out property <string> export-format: "gif";
+    in-out property <int> export-fps: 15;
+    in-out property <int> trim-start-ms: 0;
+    in-out property <int> trim-end-ms: 3000;
+    in-out property <int> scale-width: 480;
+    
+    // Callbacks
+    callback start-recording();
+    callback stop-recording();
+    callback start-export();
+    callback show-region-selector();
+    
+    VerticalBox {
+        padding: 20px;
+        spacing: 15px;
+        
+        // Status section
+        Rectangle {
+            height: 80px;
+            background: #1a1a1a;
+            border-radius: 8px;
+            
+            VerticalBox {
+                alignment: center;
+                
+                Text {
+                    text: status-text;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                }
+                
+                if state == AppState.recording: HorizontalBox {
+                    alignment: center;
+                    spacing: 8px;
+                    
+                    Rectangle {
+                        width: 12px;
+                        height: 12px;
+                        background: #ef4444;
+                        border-radius: 6px;
+                    }
+                    
+                    Text {
+                        text: (recording-duration-ms / 1000) + "s";
+                        font-size: 20px;
+                        color: #ef4444;
+                    }
+                }
+            }
+        }
+        
+        // Capture region controls (idle state)
+        if state == AppState.idle: VerticalBox {
+            spacing: 10px;
+            
+            Text {
+                text: "Capture Region";
+                font-size: 14px;
+                font-weight: 600;
+            }
+            
+            HorizontalBox {
+                spacing: 10px;
+                
+                Text { text: "Position:"; }
+                Text { text: capture-region.x + "," + capture-region.y; color: #888; }
+            }
+            
+            HorizontalBox {
+                spacing: 10px;
+                
+                Text { text: "Size:"; }
+                Text { text: capture-region.width + "×" + capture-region.height; color: #888; }
+            }
+            
+            Button {
+                text: "Select Region";
+                clicked => { show-region-selector() }
+            }
+            
+            Button {
+                text: "Start Recording";
+                primary: true;
+                clicked => { start-recording() }
+            }
+        }
+        
+        // Recording controls
+        if state == AppState.recording: VerticalBox {
+            spacing: 10px;
+            
+            Button {
+                text: "Stop Recording";
+                clicked => { stop-recording() }
+            }
+        }
+        
+        // Editor controls
+        if state == AppState.editing: VerticalBox {
+            spacing: 10px;
+            
+            Text {
+                text: "Edit Recording";
+                font-size: 14px;
+                font-weight: 600;
+            }
+            
+            HorizontalBox {
+                spacing: 10px;
+                
+                Text { text: "Trim:"; }
+                Text { text: (trim-start-ms / 1000) + "s - " + (trim-end-ms / 1000) + "s"; color: #888; }
+            }
+            
+            Text { text: "Start (s)"; font-size: 12px; }
+            Slider {
+                minimum: 0;
+                maximum: recording-duration-ms;
+                value: trim-start-ms;
+                changed(v) => { trim-start-ms = Math.round(v); }
+            }
+            
+            Text { text: "End (s)"; font-size: 12px; }
+            Slider {
+                minimum: 0;
+                maximum: recording-duration-ms;
+                value: trim-end-ms;
+                changed(v) => { trim-end-ms = Math.round(v); }
+            }
+            
+            HorizontalBox {
+                spacing: 10px;
+                
+                VerticalBox {
+                    Text { text: "Format"; font-size: 12px; }
+                    ComboBox {
+                        model: ["GIF", "WebP", "MP4"];
+                        current-value: export-format;
+                        selected(v) => {
+                            export-format = v == "GIF" ? "gif" : (v == "WebP" ? "webp" : "mp4");
+                        }
+                    }
+                }
+                
+                VerticalBox {
+                    Text { text: "FPS"; font-size: 12px; }
+                    ComboBox {
+                        model: ["10", "15", "24", "30"];
+                        current-value: export-fps + "";
+                        selected(v) => {
+                            export-fps = v == "10" ? 10 : (v == "15" ? 15 : (v == "24" ? 24 : 30));
+                        }
+                    }
+                }
+                
+                VerticalBox {
+                    Text { text: "Width"; font-size: 12px; }
+                    ComboBox {
+                        model: ["360", "480", "720", "1080"];
+                        current-value: scale-width + "";
+                        selected(v) => {
+                            scale-width = v == "360" ? 360 : (v == "480" ? 480 : (v == "720" ? 720 : 1080));
+                        }
+                    }
+                }
+            }
+            
+            Button {
+                text: "Export";
+                primary: true;
+                clicked => { start-export() }
+            }
+        }
+        
+        // Exporting state
+        if state == AppState.exporting: VerticalBox {
+            alignment: center;
+            
+            Text {
+                text: "Exporting...";
+                font-size: 16px;
+            }
+        }
+    }
+}
+
+================================================================================
+FILE: ui/ui/overlay.slint
+================================================================================
+import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component UnifiedOverlay inherits Window {
+    title: "MandyGIF";
+    width: 3840px;
+    height: 2160px;
+    background: transparent;
+    always-on-top: true;
+    no-frame: true;
+
+    // State
+    in-out property <bool> recording: false;
+    in-out property <int> recording-duration-ms: 0;
+    in-out property <float> sel-x: 320;
+    in-out property <float> sel-y: 180;
+    in-out property <float> sel-width: 1280;
+    in-out property <float> sel-height: 720;
+    in-out property <string> locked-aspect: "";  // "", "16:9", "4:3", "1:1"
+    
+    // Export settings
+    in-out property <string> export-format: "gif";
+    in-out property <int> export-fps: 15;
+    in-out property <int> scale-width: 480;
+    
+    // Callbacks
+    callback start-recording();
+    callback stop-recording();
+    callback start-export();
+    callback cancel();
+
+    // Selection box with green overlay - HIDDEN during recording
+    if !root.recording: Rectangle {
+        x: root.sel-x * 1px;
+        y: root.sel-y * 1px;
+        width: root.sel-width * 1px;
+        height: root.sel-height * 1px;
+        background: #00ff0020;
+        border-color: #00ff00;
+        border-width: 2px;
+    }
+
+    // Top bar - moves above recording area when recording
+    Rectangle {
+        x: root.sel-x * 1px;
+        y: root.recording ? (root.sel-y * 1px - 50px) : (root.sel-y * 1px - 40px);
+        width: root.sel-width * 1px;
+        height: 40px;
+        background: #2a2a2a;
+        border-radius: 8px;
+        opacity: root.recording ? 0.7 : 1.0;
+        
+        HorizontalBox {
+            padding: 10px;
+            spacing: 10px;
+            alignment: space-between;
+            
+            // Dimensions display
+            Text {
+                text: round(root.sel-width) + " × " + round(root.sel-height);
+                color: #ffffff;
+                font-size: 16px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            
+            // Recording status
+            if root.recording: HorizontalBox {
+                spacing: 8px;
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    background: #ff0000;
+                    border-radius: 5px;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: Math.floor(root.recording-duration-ms / 1000) + "s";
+                    color: #ff0000;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                }
+            }
+            
+            // Close button
+            Rectangle {
+                width: 30px;
+                height: 30px;
+                background: close-ta.has-hover ? #ff4444 : transparent;
+                border-radius: 6px;
+                
+                Text {
+                    text: "✕";
+                    color: #ffffff;
+                    font-size: 20px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                
+                close-ta := TouchArea {
+                    clicked => { root.cancel(); }
+                }
+            }
+        }
+        
+        // Make top bar draggable
+        drag-area := TouchArea {
+            moved => {
+                if (self.enabled && self.pressed) {
+                    root.sel-x = max(0, min(3840 - root.sel-width, 
+                        root.sel-x + (self.mouse-x - self.pressed-x) / 1px));
+                    root.sel-y = max(50, min(2160 - root.sel-height - 60, 
+                        root.sel-y + (self.mouse-y - self.pressed-y) / 1px));
+                }
+            }
+        }
+    }
+
+    // Bottom control bar - moves below recording area when recording
+    Rectangle {
+        x: root.sel-x * 1px;
+        y: root.recording ? (root.sel-y * 1px + root.sel-height * 1px + 10px) : (root.sel-y * 1px + root.sel-height * 1px);
+        width: root.sel-width * 1px;
+        height: 50px;
+        background: #2a2a2a;
+        border-radius: 8px;
+        opacity: root.recording ? 0.7 : 1.0;
+        
+        HorizontalBox {
+            padding: 10px;
+            spacing: 15px;
+            alignment: space-between;
+            
+            // Left side - Record/Stop/Export buttons
+            HorizontalBox {
+                spacing: 10px;
+                
+                if !root.recording && root.recording-duration-ms == 0: Rectangle {
+                    width: 100px;
+                    height: 30px;
+                    background: rec-btn.has-hover ? #00cc00 : #00ff00;
+                    border-radius: 15px;
+                    
+                    Text {
+                        text: "REC";
+                        color: #000000;
+                        font-size: 14px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    rec-btn := TouchArea {
+                        clicked => { root.start-recording(); }
+                    }
+                }
+                
+                if root.recording: Rectangle {
+                    width: 100px;
+                    height: 30px;
+                    background: stop-btn.has-hover ? #cc0000 : #ff0000;
+                    border-radius: 15px;
+                    
+                    Text {
+                        text: "STOP";
+                        color: #ffffff;
+                        font-size: 14px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    stop-btn := TouchArea {
+                        clicked => { root.stop-recording(); }
+                    }
+                }
+                
+                if !root.recording && root.recording-duration-ms > 0: Rectangle {
+                    width: 100px;
+                    height: 30px;
+                    background: export-btn.has-hover ? #0088cc : #00aaff;
+                    border-radius: 15px;
+                    
+                    Text {
+                        text: "Export";
+                        color: #ffffff;
+                        font-size: 14px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    export-btn := TouchArea {
+                        clicked => { root.start-export(); }
+                    }
+                }
+                
+                // Format selector (when we have a recording)
+                if !root.recording && root.recording-duration-ms > 0: HorizontalBox {
+                    spacing: 5px;
+                    
+                    for format in ["gif", "mp4", "webp"]: Rectangle {
+                        width: 45px;
+                        height: 25px;
+                        background: (root.export-format == format) ? #00ff00 : #444444;
+                        border-radius: 4px;
+                        
+                        Text {
+                            text: format;
+                            color: (root.export-format == format) ? #000000 : #888888;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        
+                        TouchArea {
+                            clicked => { root.export-format = format; }
+                        }
+                    }
+                }
+            }
+            
+            // Center - Aspect ratio buttons
+            HorizontalBox {
+                spacing: 8px;
+                
+                Rectangle {
+                    property <bool> is-active: root.locked-aspect == "16:9";
+                    width: 50px;
+                    height: 25px;
+                    background: is-active ? #00ff00 : (ar169-ta.has-hover ? #444444 : #333333);
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: is-active ? #00ff00 : #555555;
+                    
+                    Text {
+                        text: "16:9";
+                        color: parent.is-active ? #000000 : (ar169-ta.has-hover ? #ffffff : #aaaaaa);
+                        font-size: 11px;
+                        font-weight: parent.is-active ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    ar169-ta := TouchArea {
+                        clicked => {
+                            if (root.locked-aspect == "16:9") {
+                                root.locked-aspect = "";
+                            } else {
+                                root.locked-aspect = "16:9";
+                                // Snap to 16:9
+                                if (abs(root.sel-width / 16 * 9 - root.sel-height) < 
+                                    abs(root.sel-height / 9 * 16 - root.sel-width)) {
+                                    root.sel-height = round(root.sel-width / 16 * 9);
+                                } else {
+                                    root.sel-width = round(root.sel-height / 9 * 16);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    property <bool> is-active: root.locked-aspect == "4:3";
+                    width: 50px;
+                    height: 25px;
+                    background: is-active ? #00ff00 : (ar43-ta.has-hover ? #444444 : #333333);
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: is-active ? #00ff00 : #555555;
+                    
+                    Text {
+                        text: "4:3";
+                        color: parent.is-active ? #000000 : (ar43-ta.has-hover ? #ffffff : #aaaaaa);
+                        font-size: 11px;
+                        font-weight: parent.is-active ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    ar43-ta := TouchArea {
+                        clicked => {
+                            if (root.locked-aspect == "4:3") {
+                                root.locked-aspect = "";
+                            } else {
+                                root.locked-aspect = "4:3";
+                                // Snap to 4:3
+                                if (abs(root.sel-width / 4 * 3 - root.sel-height) < 
+                                    abs(root.sel-height / 3 * 4 - root.sel-width)) {
+                                    root.sel-height = round(root.sel-width / 4 * 3);
+                                } else {
+                                    root.sel-width = round(root.sel-height / 3 * 4);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Rectangle {
+                    property <bool> is-active: root.locked-aspect == "1:1";
+                    width: 50px;
+                    height: 25px;
+                    background: is-active ? #00ff00 : (ar11-ta.has-hover ? #444444 : #333333);
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: is-active ? #00ff00 : #555555;
+                    
+                    Text {
+                        text: "1:1";
+                        color: parent.is-active ? #000000 : (ar11-ta.has-hover ? #ffffff : #aaaaaa);
+                        font-size: 11px;
+                        font-weight: parent.is-active ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    ar11-ta := TouchArea {
+                        clicked => {
+                            if (root.locked-aspect == "1:1") {
+                                root.locked-aspect = "";
+                            } else {
+                                root.locked-aspect = "1:1";
+                                // Snap to 1:1
+                                if (root.sel-width < root.sel-height) {
+                                    root.sel-height = root.sel-width;
+                                } else {
+                                    root.sel-width = root.sel-height;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Right side - Resize handle
+            Rectangle {
+                width: 30px;
+                height: 30px;
+                
+                Image {
+                    source: @image-url("../assets/6dots.svg");
+                    width: 24px;
+                    height: 24px;
+                    x: 3px;
+                    y: 3px;
+                    colorize: #666666;
+                }
+                
+                resize-area := TouchArea {
+                    mouse-cursor: MouseCursor.nwse-resize;
+                    moved => {
+                        if (self.enabled && self.pressed) {
+                            if (root.locked-aspect == "") {
+                                // Free resize
+                                root.sel-width = max(200, min(3840 - root.sel-x,
+                                    root.sel-width + (self.mouse-x - self.pressed-x) / 1px));
+                                root.sel-height = max(100, min(2160 - root.sel-y - 50,
+                                    root.sel-height + (self.mouse-y - self.pressed-y) / 1px));
+                            } else if (root.locked-aspect == "16:9") {
+                                // Locked to 16:9
+                                root.sel-width = max(320, min(3840 - root.sel-x,
+                                    root.sel-width + (self.mouse-x - self.pressed-x) / 1px));
+                                root.sel-height = round(root.sel-width / 16 * 9);
+                            } else if (root.locked-aspect == "4:3") {
+                                // Locked to 4:3
+                                root.sel-width = max(200, min(3840 - root.sel-x,
+                                    root.sel-width + (self.mouse-x - self.pressed-x) / 1px));
+                                root.sel-height = round(root.sel-width / 4 * 3);
+                            } else if (root.locked-aspect == "1:1") {
+                                // Locked to 1:1
+                                root.sel-width = max(100, min(
+                                    min(3840 - root.sel-x, 2160 - root.sel-y - 50),
+                                    root.sel-width + max(
+                                        (self.mouse-x - self.pressed-x) / 1px,
+                                        (self.mouse-y - self.pressed-y) / 1px)));
+                                root.sel-height = root.sel-width;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

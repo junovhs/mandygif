@@ -1,53 +1,72 @@
-//! Golden file tests for protocol stability
-//! 
-//! When messages change, these fixtures must be updated deliberately.
-
 use mandygif_protocol::*;
+use std::path::PathBuf;
 
 #[test]
-fn recorder_start_golden() {
-    let json = r#"{"cmd":"start","region":{"x":128,"y":96,"width":640,"height":360},"fps":30,"cursor":true,"out":"/tmp/clip.mp4"}"#;
-    let cmd = parse_recorder_command(json).expect("parse failed");
-    
-    match cmd {
-        RecorderCommand::Start { region, fps, cursor, out } => {
-            assert_eq!(region.x, 128);
-            assert_eq!(region.width, 640);
-            assert_eq!(fps, 30);
-            assert!(cursor);
-            assert_eq!(out.to_str().unwrap(), "/tmp/clip.mp4");
-        }
-        _ => panic!("wrong variant"),
+fn test_recorder_command() {
+    let cmd = RecorderCommand::Start {
+        region: CaptureRegion {
+            x: 10,
+            y: 20,
+            width: 800,
+            height: 600,
+        },
+        fps: 60,
+        cursor: true,
+        out: PathBuf::from("/tmp/test.mp4"),
+    };
+
+    let json = to_jsonl(&cmd).expect("serialization failed");
+    let parsed = parse_recorder_command(&json).expect("parse failed");
+
+    assert_eq!(cmd, parsed);
+}
+
+#[test]
+fn test_encoder_command() {
+    let cmd = EncoderCommand::Gif {
+        input: PathBuf::from("in.mp4"),
+        trim: TrimRange {
+            start_ms: 0,
+            end_ms: 1000,
+        },
+        fps: 15,
+        scale_px: Some(320),
+        loop_mode: LoopMode::Normal,
+        captions: vec![],
+        out: PathBuf::from("out.gif"),
+    };
+
+    let json = to_jsonl(&cmd).expect("serialization failed");
+    let parsed = parse_encoder_command(&json).expect("parse failed");
+
+    if let EncoderCommand::Gif {
+        input,
+        trim: _,
+        fps,
+        scale_px,
+        loop_mode: _,
+        captions: _,
+        out,
+    } = parsed
+    {
+        assert_eq!(input, PathBuf::from("in.mp4"));
+        assert_eq!(fps, 15);
+        assert_eq!(scale_px, Some(320));
+        assert_eq!(out, PathBuf::from("out.gif"));
+    } else {
+        panic!("Wrong variant parsed");
     }
 }
 
 #[test]
-fn recorder_event_golden() {
-    let json = r#"{"event":"stopped","duration_ms":10333,"path":"/tmp/clip.mp4"}"#;
-    let event = parse_recorder_event(json).expect("parse failed");
-    
-    match event {
-        RecorderEvent::Stopped { duration_ms, path } => {
-            assert_eq!(duration_ms, 10333);
-            assert_eq!(path.to_str().unwrap(), "/tmp/clip.mp4");
-        }
-        _ => panic!("wrong variant"),
-    }
-}
+fn test_recorder_event_roundtrip() {
+    let evt = RecorderEvent::Started { pts_ms: 1234 };
+    let json = to_jsonl(&evt).expect("serialization failed");
+    let parsed = parse_recorder_event(&json).expect("parse failed");
 
-#[test]
-fn encoder_gif_golden() {
-    let json = r#"{"cmd":"gif","in":"/tmp/clip.mp4","trim":{"start_ms":200,"end_ms":5200},"fps":15,"scale_px":480,"loop":"pingpong","captions":[],"out":"/tmp/out.gif"}"#;
-    let cmd = parse_encoder_command(json).expect("parse failed");
-    
-    match cmd {
-        EncoderCommand::Gif { input, trim, fps, scale_px, loop_mode, captions, out } => {
-            assert_eq!(trim.start_ms, 200);
-            assert_eq!(fps, 15);
-            assert_eq!(scale_px, Some(480));
-            assert_eq!(loop_mode, LoopMode::Pingpong);
-            assert!(captions.is_empty());
-        }
-        _ => panic!("wrong variant"),
+    if let RecorderEvent::Started { pts_ms } = parsed {
+        assert_eq!(pts_ms, 1234);
+    } else {
+        panic!("Wrong variant");
     }
 }

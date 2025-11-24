@@ -38,13 +38,14 @@ pub fn ControlBar(
                     style: "background: #44ff44; color: black; border: none; padding: 5px 15px; border-radius: 4px; cursor: pointer;",
                     "RECORD"
                 }
-            } else {
+            } else if *mode == AppMode::Review {
+                // Show Export Controls
                 select {
                     onchange: move |evt| {
                         tracing::info!("Format changed: {}", evt.value());
                         state.export_format.set(evt.value());
                     },
-                    style: "padding: 5px; border-radius: 4px; background: #333; color: white; border: 1px solid #555;",
+                    style: "padding: 5px; border-radius: 4px; background: #333; color: white; border: 1px solid #555; cursor: pointer;",
                     option { value: "gif", "GIF" }
                     option { value: "mp4", "MP4" }
                     option { value: "webp", "WebP" }
@@ -57,6 +58,16 @@ pub fn ControlBar(
                     style: "background: #4488ff; color: white; border: none; padding: 5px 15px; border-radius: 4px; cursor: pointer;",
                     "EXPORT"
                 }
+                // Option to discard and re-record
+                button {
+                    onclick: move |_| {
+                        state.mode.set(AppMode::Idle);
+                    },
+                    style: "background: transparent; color: #aaa; border: 1px solid #555; padding: 5px 10px; border-radius: 4px; cursor: pointer;",
+                    "Discard"
+                }
+            } else if *mode == AppMode::Exporting {
+                div { "Exporting..." }
             }
         }
     }

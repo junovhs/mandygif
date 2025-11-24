@@ -5,22 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "recorder-linux"
-path = "src/main.rs"
-
 [dependencies]
 mandygif-protocol = { path = "../protocol" }
 anyhow.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-serde_json.workspace = true
-
-# GStreamer bindings
 gstreamer = "0.22"
 gstreamer-app = "0.22"
 gstreamer-video = "0.22"
-
-# PipeWire/Portal (optional for Wayland)
-ashpd = { version = "0.8", default-features = false, features = ["tokio", "pipewire"] }
+tracing.workspace = true

@@ -3,8 +3,10 @@
 #![allow(non_snake_case)]
 
 mod app;
+mod hooks;
 mod components {
     pub mod control_bar;
+    pub mod resize_handle;
 }
 mod processes;
 mod state;
@@ -23,9 +25,10 @@ fn main() {
                 .with_transparent(true)
                 .with_decorations(false)
                 .with_always_on_top(true)
-                .with_maximized(true), // Fullscreen overlay
+                .with_resizable(true)
+                .with_maximized(true),
         )
-        .with_background_color((0, 0, 0, 0)); // Fully transparent
+        .with_background_color((0, 0, 0, 0));
 
     LaunchBuilder::desktop().with_cfg(cfg).launch(App);
 }

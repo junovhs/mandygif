@@ -6,27 +6,103 @@ body {
     height: 100%;
     background: transparent;
     overflow: hidden;
-    font-family: sans-serif;
-    /* FIX: Re-enable pointer events globally to debug click issues */
-    pointer-events: auto;
+    font-family: "Inter", system-ui, sans-serif;
+    pointer-events: auto; /* We need this for resize handles */
 }
 
-.control-bar,
-.header,
-button,
-select,
-option,
-span {
-    pointer-events: auto;
-    cursor: pointer; /* Force cursor to show it's clickable */
+/* The main container */
+.app-frame {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    position: relative;
+    /* The border color is set inline in App.rs */
 }
 
-.overlay-container {
-    /* Ensure the container itself doesn't block, but its children do */
-    pointer-events: none;
+/* --- RESIZE HANDLES --- */
+/* Common styles for all handles */
+[class^="handle-"] {
+    position: absolute;
+    z-index: 9999;
+    /* Debug: set background to red to see them */
+    background: transparent;
 }
 
-/* Make sure children of the container (header, controls) capture input */
-.overlay-container > div {
+/* Corners (Larger hit area) */
+.handle-nw {
+    top: 0;
+    left: 0;
+    width: 15px;
+    height: 15px;
+    cursor: nw-resize;
+}
+.handle-ne {
+    top: 0;
+    right: 0;
+    width: 15px;
+    height: 15px;
+    cursor: ne-resize;
+}
+.handle-sw {
+    bottom: 0;
+    left: 0;
+    width: 15px;
+    height: 15px;
+    cursor: sw-resize;
+}
+.handle-se {
+    bottom: 0;
+    right: 0;
+    width: 15px;
+    height: 15px;
+    cursor: se-resize;
+}
+
+/* Sides (Thin strips) */
+.handle-n {
+    top: 0;
+    left: 15px;
+    right: 15px;
+    height: 8px;
+    cursor: n-resize;
+}
+.handle-s {
+    bottom: 0;
+    left: 15px;
+    right: 15px;
+    height: 8px;
+    cursor: s-resize;
+}
+.handle-w {
+    left: 0;
+    top: 15px;
+    bottom: 15px;
+    width: 8px;
+    cursor: w-resize;
+}
+.handle-e {
+    right: 0;
+    top: 15px;
+    bottom: 15px;
+    width: 8px;
+    cursor: e-resize;
+}
+
+/* --- UI ELEMENTS --- */
+.header {
     pointer-events: auto;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+button {
+    transition: all 0.2s ease;
+}
+
+button:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+}
+
+button:active {
+    transform: translateY(0);
 }

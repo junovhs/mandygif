@@ -11,13 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 mandygif-protocol = { path = "../core/protocol" }
+mandygif-recorder-linux = { path = "../core/recorder-linux" }
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
-# Dioxus UI
 dioxus = { version = "0.6", features = ["desktop"] }
 dioxus-logger = "0.6"

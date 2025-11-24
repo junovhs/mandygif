@@ -1,5 +1,5 @@
 // warden:ignore
-use crate::components::icons::{IconExport, IconMic, IconSettings, IconSpeaker, IconStop};
+use crate::components::icons::{IconExport, IconSettings, IconStop};
 use crate::state::{use_app_state, AppMode};
 use dioxus::prelude::*;
 
@@ -12,7 +12,7 @@ pub fn ControlBar(
     let mut state = use_app_state();
     let mode = state.mode.read();
 
-    // FIX: Dereference the signal read (*) to get the i32 value for math
+    // Dereference for math
     let duration = *state.duration_ms.read();
 
     // Format: 00:00
@@ -24,12 +24,11 @@ pub fn ControlBar(
         div {
             class: "control-shell",
 
-            // ZONE 1: Toggles (Always visible unless exporting)
+            // ZONE 1: Settings (Left)
             if *mode != AppMode::Exporting {
                 div {
                     class: "zone-left",
-                    button { class: "icon-btn", title: "Microphone", IconMic {} }
-                    button { class: "icon-btn", title: "System Audio", IconSpeaker {} }
+                    // Removed Mic/Speaker icons
                     button { class: "icon-btn", title: "Settings", IconSettings {} }
                 }
             }
@@ -50,7 +49,6 @@ pub fn ControlBar(
                         span { "{time_str}" }
                     }
                 } else if *mode == AppMode::Review {
-                     // In review, center is empty or could show playback controls
                      span { class: "review-text", "Review" }
                 }
             }

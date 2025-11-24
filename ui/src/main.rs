@@ -12,8 +12,9 @@ mod processes;
 mod state;
 
 use app::App;
-use dioxus::desktop::tao::dpi::PhysicalSize;
 use dioxus::desktop::{Config, WindowBuilder};
+// FIX: Switch back to LogicalSize for High DPI support
+use dioxus::desktop::tao::dpi::LogicalSize;
 use dioxus::prelude::*;
 
 fn main() {
@@ -28,9 +29,8 @@ fn main() {
                 .with_always_on_top(true)
                 .with_maximized(false)
                 .with_resizable(true)
-                // FIX: Use PhysicalSize for exact pixel control on 4K
-                .with_min_inner_size(PhysicalSize::new(300, 150))
-                .with_inner_size(PhysicalSize::new(800, 600)),
+                // FIX: Use LogicalSize 800x600
+                .with_inner_size(LogicalSize::new(800.0, 600.0)),
         )
         .with_background_color((0, 0, 0, 0));
 

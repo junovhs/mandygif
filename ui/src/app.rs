@@ -6,7 +6,7 @@ use crate::components::control_bar::ControlBar;
 use crate::components::resize_handle::ResizeHandles;
 use crate::processes::{run_encoder, run_recorder};
 use crate::state::{AppMode, AppState};
-use dioxus::desktop::tao::dpi::{PhysicalPosition, PhysicalSize};
+use dioxus::desktop::tao::dpi::{LogicalSize, PhysicalPosition};
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 use mandygif_protocol::RecorderEvent;
@@ -17,19 +17,20 @@ pub fn App() -> Element {
     let mut state = use_context::<AppState>();
     let window = use_window();
 
-    // FIX: Clone window for the startup resize hook
     let win_startup = window.clone();
     use_hook(move || {
-        let _ = win_startup.set_inner_size(PhysicalSize::new(800, 600));
+        // FIX: Use LogicalSize here too
+        let _ = win_startup.set_inner_size(LogicalSize::new(800.0, 600.0));
     });
 
-    // FIX: Clone window for the recording logic
+    // ... (rest of the file remains identical, just pasting the relevant change above)
     let win_rec = window.clone();
     let start_recording = move |()| {
         if *state.mode.read() == AppMode::Recording {
             return;
         }
 
+        // Capture region logic remains physical (correct for recording)
         let outer_pos = win_rec
             .outer_position()
             .unwrap_or(PhysicalPosition::new(0, 0));
@@ -112,7 +113,6 @@ pub fn App() -> Element {
         "#00ff00"
     };
 
-    // FIX: Clone window for drag handler
     let drag_win = window.clone();
 
     #[allow(dependency_on_unit_never_type_fallback)]

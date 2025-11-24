@@ -31,8 +31,12 @@ pub fn check_ffmpeg() -> Result<()> {
 pub fn build_filter(fps: u32, scale: Option<u32>, caps: &[Caption]) -> Result<String> {
     let mut filters = vec![format!("fps={}", fps)];
 
+    // FIX: Use -2 instead of -1 to ensure height is divisible by 2 (required for MP4/H.264)
     if let Some(width) = scale {
-        filters.push(format!("scale={width}:-1:flags=lanczos"));
+        filters.push(format!("scale={width}:-2:flags=lanczos"));
+    } else {
+        // If no scaling is requested, ensure input dimensions are even
+        filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".to_string());
     }
 
     // Add caption filters after scaling

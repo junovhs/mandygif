@@ -92,15 +92,16 @@ impl Recorder {
                 &[gst::MessageType::Eos, gst::MessageType::Error],
             );
 
-            match msg {
-                Some(msg) => match msg.view() {
+            if let Some(msg) = msg {
+                match msg.view() {
                     gst::MessageView::Eos(_) => info!("EOS received, file finalized."),
                     gst::MessageView::Error(err) => {
-                        error!("Pipeline error during stop: {}", err.error())
+                        error!("Pipeline error during stop: {}", err.error());
                     }
                     _ => (),
-                },
-                None => error!("Timed out waiting for EOS - file might be corrupt"),
+                }
+            } else {
+                error!("Timed out waiting for EOS - file might be corrupt");
             }
         }
 

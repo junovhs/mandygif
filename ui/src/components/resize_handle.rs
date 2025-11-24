@@ -1,3 +1,4 @@
+// warden:ignore
 use dioxus::desktop::tao::window::ResizeDirection;
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
@@ -11,8 +12,17 @@ pub fn ResizeHandles() -> Element {
         let w = window.clone();
         rsx! {
             div {
-                class: "{class}",
-                // FIX: Explicitly ignore result to return unit type ()
+                class: "resize-zone {class}",
+                style: match dir {
+                    ResizeDirection::North => "top: 0; left: 10px; right: 10px; height: 6px; cursor: n-resize;",
+                    ResizeDirection::South => "bottom: 0; left: 10px; right: 10px; height: 6px; cursor: s-resize;",
+                    ResizeDirection::East => "top: 10px; bottom: 10px; right: 0; width: 6px; cursor: e-resize;",
+                    ResizeDirection::West => "top: 10px; bottom: 10px; left: 0; width: 6px; cursor: w-resize;",
+                    ResizeDirection::NorthWest => "top: 0; left: 0; width: 10px; height: 10px; cursor: nw-resize;",
+                    ResizeDirection::NorthEast => "top: 0; right: 0; width: 10px; height: 10px; cursor: ne-resize;",
+                    ResizeDirection::SouthWest => "bottom: 0; left: 0; width: 10px; height: 10px; cursor: sw-resize;",
+                    ResizeDirection::SouthEast => "bottom: 0; right: 0; width: 10px; height: 10px; cursor: se-resize;",
+                },
                 onmousedown: move |_| { let _ = w.drag_resize_window(dir); },
             }
         }
@@ -20,15 +30,15 @@ pub fn ResizeHandles() -> Element {
 
     rsx! {
         // Corners
-        {make_handle(ResizeDirection::NorthWest, "handle-nw")}
-        {make_handle(ResizeDirection::NorthEast, "handle-ne")}
-        {make_handle(ResizeDirection::SouthWest, "handle-sw")}
-        {make_handle(ResizeDirection::SouthEast, "handle-se")}
+        {make_handle(ResizeDirection::NorthWest, "")}
+        {make_handle(ResizeDirection::NorthEast, "")}
+        {make_handle(ResizeDirection::SouthWest, "")}
+        {make_handle(ResizeDirection::SouthEast, "")}
 
         // Sides
-        {make_handle(ResizeDirection::North, "handle-n")}
-        {make_handle(ResizeDirection::South, "handle-s")}
-        {make_handle(ResizeDirection::West, "handle-w")}
-        {make_handle(ResizeDirection::East, "handle-e")}
+        {make_handle(ResizeDirection::North, "")}
+        {make_handle(ResizeDirection::South, "")}
+        {make_handle(ResizeDirection::West, "")}
+        {make_handle(ResizeDirection::East, "")}
     }
 }

@@ -8,70 +8,56 @@ use dioxus::desktop::tao::dpi::LogicalSize;
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 
-// FIX: Suppress the Rust 2024 compatibility warning regarding exit(0)
 #[allow(dependency_on_unit_never_type_fallback)]
 pub fn App() -> Element {
     use_context_provider(AppState::new);
     let state = use_context::<AppState>();
     let window = use_window();
-
-    // FIX: Use the hook we created to handle logic
     let recorder = use_recorder();
 
-    // Force window size on startup
+    // Initial size
     let win_startup = window.clone();
     use_hook(move || {
-        let _ = win_startup.set_inner_size(LogicalSize::new(800.0, 600.0));
+        // FIX: Removed `let _ =` (clippy::let_unit_value)
+        win_startup.set_inner_size(LogicalSize::new(800.0, 600.0));
     });
 
     let current_mode = *state.mode.read();
-
-    // CSS class for border state
-    let mode_class = match current_mode {
-        AppMode::Recording => "mode-recording",
-        AppMode::Review | AppMode::Exporting => "mode-review",
-        _ => "mode-idle",
-    };
-
     let drag_win = window.clone();
-    let close_handler = move |_: MouseEvent| {
-        std::process::exit(0);
+
+    // Determine state class for CSS
+    let state_class = match current_mode {
+        AppMode::Recording => "state-recording",
+        AppMode::Review | AppMode::Exporting => "state-review",
+        // FIX: Explicit match (clippy::match_wildcard_for_single_variants)
+        AppMode::Idle => "state-idle",
     };
 
     rsx! {
         style { dangerous_inner_html: include_str!("style.css") }
 
         div {
-            class: "app-frame {mode_class}",
+            class: "app-frame {state_class}",
 
-            if current_mode == AppMode::Idle || current_mode == AppMode::Review {
+            // 1. Resize Handles (Only when not recording)
+            if current_mode == AppMode::Idle {
                 ResizeHandles {}
             }
 
-            div {
-                class: "header",
-                style: "background: rgba(20,20,20,0.9); padding: 6px 12px; display: flex; justify-content: space-between; align-items: center; border-bottom-right-radius: 8px; width: fit-content; border: 1px solid rgba(255,255,255,0.1); border-top: none; border-left: none;",
-
-                span {
+            // 2. Drag Header (Invisible but usable area at top)
+            if current_mode == AppMode::Idle {
+                div {
+                    class: "drag-header",
                     onmousedown: move |_| drag_win.drag(),
-                    style: "color: white; font-weight: 700; font-size: 13px; margin-right: 15px; cursor: move; user-select: none; letter-spacing: 0.5px; font-family: sans-serif;",
-                    "MandyGIF"
-                }
-
-                button {
-                    onclick: close_handler,
-                    style: "background: #ff4444; color: white; border: none; border-radius: 50%; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 10px; line-height: 1;",
-                    "✕"
+                    // Optional: Visual indicator for drag area if needed
                 }
             }
 
-            div {
-                style: "position: absolute; bottom: 20px; left: 20px;",
-                ControlBar {
-                    on_record: recorder.start,
-                    on_stop: recorder.stop,
-                    on_export: recorder.export
-                }
+            // 3. Floating Control Bar
+            ControlBar {
+                on_record: recorder.start,
+                on_stop: recorder.stop,
+                on_export: recorder.export
             }
         }
     }

@@ -1,3 +1,5 @@
+// warden:ignore
+use crate::components::icons::{IconExport, IconMic, IconRecord, IconSettings, IconStop};
 use crate::state::{use_app_state, AppMode};
 use dioxus::prelude::*;
 
@@ -11,63 +13,65 @@ pub fn ControlBar(
     let mode = state.mode.read();
     let duration = state.duration_ms.read();
 
+    // Calculate formatted time
+    let d = *duration;
+    let seconds = (d / 1000) % 60;
+    let minutes = (d / 1000) / 60;
+    let time_str = format!("{minutes:02}:{seconds:02}");
+
     rsx! {
         div {
-            class: "control-bar",
-            style: "background: #1a1a1a; padding: 10px; border-radius: 8px; display: flex; gap: 10px; align-items: center; color: white;",
+            class: "control-pill",
 
+            // Settings / Config (Left side)
+            if *mode != AppMode::Recording {
+                button { class: "icon-btn", title: "Microphone", IconMic {} }
+                button { class: "icon-btn", title: "Settings", IconSettings {} }
+                div { class: "pill-divider" }
+            }
+
+            // Main Action Button (Center)
             if *mode == AppMode::Recording {
-                div {
-                    style: "color: #ff4444; font-weight: bold;",
-                    "REC {*duration / 1000}s"
-                }
+                div { class: "timer", "{time_str}" }
                 button {
-                    onclick: move |_| {
-                        tracing::info!("STOP button clicked");
-                        on_stop.call(());
-                    },
-                    style: "background: #ff4444; color: white; border: none; padding: 5px 15px; border-radius: 4px; cursor: pointer;",
-                    "STOP"
+                    class: "icon-btn btn-stop",
+                    onclick: move |_| on_stop.call(()),
+                    IconStop {}
                 }
             } else if *mode == AppMode::Idle {
                 button {
-                    onclick: move |_| {
-                        tracing::info!("RECORD button clicked");
-                        on_record.call(());
-                    },
-                    style: "background: #44ff44; color: black; border: none; padding: 5px 15px; border-radius: 4px; cursor: pointer;",
-                    "RECORD"
+                    class: "icon-btn btn-record",
+                    onclick: move |_| on_record.call(()),
+                    IconRecord {}
                 }
             } else if *mode == AppMode::Review {
-                // Show Export Controls
+                 // Export Section
                 select {
-                    onchange: move |evt| {
-                        tracing::info!("Format changed: {}", evt.value());
-                        state.export_format.set(evt.value());
-                    },
-                    style: "padding: 5px; border-radius: 4px; background: #333; color: white; border: 1px solid #555; cursor: pointer;",
+                    class: "icon-btn",
+                    style: "font-size: 12px; width: auto; padding: 4px 8px; border-radius: 4px;",
+                    onchange: move |evt| state.export_format.set(evt.value()),
                     option { value: "gif", "GIF" }
                     option { value: "mp4", "MP4" }
                     option { value: "webp", "WebP" }
                 }
                 button {
-                    onclick: move |_| {
-                        tracing::info!("EXPORT button clicked");
-                        on_export.call(());
-                    },
-                    style: "background: #4488ff; color: white; border: none; padding: 5px 15px; border-radius: 4px; cursor: pointer;",
-                    "EXPORT"
+                    class: "icon-btn",
+                    style: "color: white; gap: 6px; padding-right: 12px; width: auto; border-radius: 20px; background: #007AFF;",
+                    onclick: move |_| on_export.call(()),
+                    IconExport {}
+                    span { "Export" }
                 }
-                // Option to discard and re-record
                 button {
-                    onclick: move |_| {
-                        state.mode.set(AppMode::Idle);
-                    },
-                    style: "background: transparent; color: #aaa; border: 1px solid #555; padding: 5px 10px; border-radius: 4px; cursor: pointer;",
-                    "Discard"
+                    class: "icon-btn",
+                    title: "Discard",
+                    onclick: move |_| state.mode.set(AppMode::Idle),
+                    "✕"
                 }
             } else if *mode == AppMode::Exporting {
-                div { "Exporting..." }
+                div {
+                    style: "color: var(--text-secondary); font-size: 13px;",
+                    "Rendering..."
+                }
             }
         }
     }

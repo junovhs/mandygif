@@ -6,6 +6,7 @@ mod app;
 mod hooks;
 mod components {
     pub mod control_bar;
+    pub mod icons;
     pub mod resize_handle;
 }
 mod processes;

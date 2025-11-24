@@ -23,7 +23,7 @@ pub fn encode_mp4(
     let dur = ms_to_sec(trim.end_ms.saturating_sub(trim.start_ms));
     let filter = build_filter(fps, scale, caps)?;
 
-    debug!("Encoding MP4 (CRF {})", crf);
+    debug!("Encoding MP4 (CRF {crf})");
 
     // FIX: Use output() to capture stderr for debugging
     let output = Command::new("ffmpeg")
@@ -45,8 +45,8 @@ pub fn encode_mp4(
 
     if !output.status.success() {
         let err_msg = String::from_utf8_lossy(&output.stderr);
-        error!("FFmpeg stderr: {}", err_msg);
-        bail!("ffmpeg MP4 encoding failed: {}", err_msg);
+        error!("FFmpeg stderr: {err_msg}");
+        bail!("ffmpeg MP4 encoding failed: {err_msg}");
     }
 
     Ok(())
@@ -94,8 +94,8 @@ pub fn encode_webp(
 
     if !output.status.success() {
         let err_msg = String::from_utf8_lossy(&output.stderr);
-        error!("FFmpeg stderr: {}", err_msg);
-        bail!("ffmpeg WebP encoding failed: {}", err_msg);
+        error!("FFmpeg stderr: {err_msg}");
+        bail!("ffmpeg WebP encoding failed: {err_msg}");
     }
 
     Ok(())

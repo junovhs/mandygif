@@ -1,5 +1,5 @@
 // warden:ignore
-use crate::components::icons::{IconExport, IconMic, IconRecord, IconSettings, IconStop};
+use crate::components::icons::{IconExport, IconMic, IconSettings, IconSpeaker, IconStop};
 use crate::state::{use_app_state, AppMode};
 use dioxus::prelude::*;
 
@@ -11,66 +11,73 @@ pub fn ControlBar(
 ) -> Element {
     let mut state = use_app_state();
     let mode = state.mode.read();
-    let duration = state.duration_ms.read();
 
-    // Calculate formatted time
-    let d = *duration;
-    let seconds = (d / 1000) % 60;
-    let minutes = (d / 1000) / 60;
-    let time_str = format!("{minutes:02}:{seconds:02}");
+    // FIX: Dereference the signal read (*) to get the i32 value for math
+    let duration = *state.duration_ms.read();
+
+    // Format: 00:00
+    let sec = (duration / 1000) % 60;
+    let min = (duration / 1000) / 60;
+    let time_str = format!("{min:02}:{sec:02}");
 
     rsx! {
         div {
-            class: "control-pill",
+            class: "control-shell",
 
-            // Settings / Config (Left side)
-            if *mode != AppMode::Recording {
-                button { class: "icon-btn", title: "Microphone", IconMic {} }
-                button { class: "icon-btn", title: "Settings", IconSettings {} }
-                div { class: "pill-divider" }
+            // ZONE 1: Toggles (Always visible unless exporting)
+            if *mode != AppMode::Exporting {
+                div {
+                    class: "zone-left",
+                    button { class: "icon-btn", title: "Microphone", IconMic {} }
+                    button { class: "icon-btn", title: "System Audio", IconSpeaker {} }
+                    button { class: "icon-btn", title: "Settings", IconSettings {} }
+                }
             }
 
-            // Main Action Button (Center)
-            if *mode == AppMode::Recording {
-                div { class: "timer", "{time_str}" }
-                button {
-                    class: "icon-btn btn-stop",
-                    onclick: move |_| on_stop.call(()),
-                    IconStop {}
+            // ZONE 2: Primary Action (Center)
+            div {
+                class: "zone-center",
+                if *mode == AppMode::Idle {
+                    button {
+                        class: "record-trigger",
+                        onclick: move |_| on_record.call(()),
+                        div { class: "record-dot" }
+                    }
+                } else if *mode == AppMode::Recording {
+                    div {
+                        class: "timer-badge",
+                        div { class: "pulse-dot" }
+                        span { "{time_str}" }
+                    }
+                } else if *mode == AppMode::Review {
+                     // In review, center is empty or could show playback controls
+                     span { class: "review-text", "Review" }
                 }
-            } else if *mode == AppMode::Idle {
-                button {
-                    class: "icon-btn btn-record",
-                    onclick: move |_| on_record.call(()),
-                    IconRecord {}
-                }
-            } else if *mode == AppMode::Review {
-                 // Export Section
-                select {
-                    class: "icon-btn",
-                    style: "font-size: 12px; width: auto; padding: 4px 8px; border-radius: 4px;",
-                    onchange: move |evt| state.export_format.set(evt.value()),
-                    option { value: "gif", "GIF" }
-                    option { value: "mp4", "MP4" }
-                    option { value: "webp", "WebP" }
-                }
-                button {
-                    class: "icon-btn",
-                    style: "color: white; gap: 6px; padding-right: 12px; width: auto; border-radius: 20px; background: #007AFF;",
-                    onclick: move |_| on_export.call(()),
-                    IconExport {}
-                    span { "Export" }
-                }
-                button {
-                    class: "icon-btn",
-                    title: "Discard",
-                    onclick: move |_| state.mode.set(AppMode::Idle),
-                    "✕"
-                }
-            } else if *mode == AppMode::Exporting {
-                div {
-                    style: "color: var(--text-secondary); font-size: 13px;",
-                    "Rendering..."
+            }
+
+            // ZONE 3: Secondary Action (Right)
+            div {
+                class: "zone-right",
+                if *mode == AppMode::Recording {
+                    button {
+                        class: "stop-btn",
+                        onclick: move |_| on_stop.call(()),
+                        IconStop {}
+                    }
+                } else if *mode == AppMode::Review {
+                    select {
+                        class: "fmt-select",
+                        onchange: move |evt| state.export_format.set(evt.value()),
+                        option { value: "gif", "GIF" }
+                        option { value: "mp4", "MP4" }
+                        option { value: "webp", "WebP" }
+                    }
+                    button {
+                        class: "action-btn",
+                        onclick: move |_| on_export.call(()),
+                        span { "Export" }
+                        IconExport {}
+                    }
                 }
             }
         }

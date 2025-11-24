@@ -1,13 +1,12 @@
 :root {
-    --bg-glass: rgba(20, 20, 20, 0.6);
-    --bg-pill: rgba(28, 28, 32, 0.95);
-    --border-glass: rgba(255, 255, 255, 0.1);
-    --accent-red: #ff3b30;
-    --accent-green: #34c759;
-    --text-primary: #ffffff;
-    --text-secondary: #8e8e93;
-    --radius-lg: 16px;
-    --radius-pill: 9999px;
+    --bg-panel: rgba(20, 20, 20, 0.85);
+    --border-panel: rgba(255, 255, 255, 0.12);
+    --accent-red: #ff453a;
+    --accent-red-dim: rgba(255, 69, 58, 0.2);
+    --text-main: #ffffff;
+    --text-muted: #8e8e93;
+    --radius-pill: 40px;
+    --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
 
 html,
@@ -19,147 +18,228 @@ body {
     background: transparent;
     overflow: hidden;
     font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
-        sans-serif;
+        -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
     user-select: none;
 }
 
-/* Main Container */
+/* --- Frame & Border --- */
 .app-frame {
     position: fixed;
     inset: 0;
-    border-radius: var(--radius-lg);
-    transition: box-shadow 0.3s ease;
-    pointer-events: none; /* Let clicks pass through the empty center */
+    border-radius: 16px;
+    transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    pointer-events: none;
 }
 
-/* Recording Border State */
 .state-idle {
-    box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.2);
+    box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.15);
 }
-
 .state-recording {
     box-shadow: inset 0 0 0 4px var(--accent-red);
 }
-
 .state-review {
-    box-shadow: inset 0 0 0 2px var(--accent-green);
-    background: rgba(0, 0, 0, 0.2);
-    pointer-events: auto; /* Block clicks during review */
+    box-shadow: inset 0 0 0 2px #32d74b;
+    background: rgba(0, 0, 0, 0.4);
+    pointer-events: auto;
 }
 
-/* Header / Drag Area */
+/* --- Drag Header --- */
 .drag-header {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
-    height: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    height: 60px;
     cursor: grab;
     pointer-events: auto;
     z-index: 100;
 }
-
 .drag-header:active {
     cursor: grabbing;
 }
 
-/* Floating Control Pill */
-.control-pill {
+/* --- Control Shell (The Pill) --- */
+.control-shell {
     position: absolute;
-    bottom: 24px;
+    bottom: 32px;
     left: 50%;
     transform: translateX(-50%);
 
+    height: 56px;
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 8px 20px;
+    justify-content: space-between;
+    padding: 0 8px;
+    gap: 12px;
+    min-width: 260px;
 
-    background: var(--bg-pill);
-    border: 1px solid var(--border-glass);
+    background: var(--bg-panel);
+    border: 1px solid var(--border-panel);
     border-radius: var(--radius-pill);
-    backdrop-filter: blur(20px);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    box-shadow: var(--shadow-float);
 
     pointer-events: auto;
     z-index: 200;
-    transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.control-pill:hover {
-    transform: translateX(-50%) translateY(-2px);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+/* --- Zones --- */
+.zone-left,
+.zone-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+}
+.zone-left {
+    justify-content: flex-start;
+    padding-left: 8px;
+}
+.zone-right {
+    justify-content: flex-end;
+    padding-right: 8px;
+}
+.zone-center {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
-/* Buttons */
+/* --- Buttons & Icons --- */
 .icon-btn {
+    width: 36px;
+    height: 36px;
     background: transparent;
     border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    padding: 8px;
+    color: var(--text-muted);
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s ease;
+    cursor: pointer;
+    transition: 0.2s;
 }
-
 .icon-btn:hover {
-    color: var(--text-primary);
-    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-main);
+    background: rgba(255, 255, 255, 0.08);
 }
 
-.btn-record {
-    width: 48px;
-    height: 48px;
-    padding: 0;
+/* --- Record Trigger (Big Red Button) --- */
+.record-trigger {
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
-    background: rgba(255, 59, 48, 0.2);
-    color: var(--accent-red);
-    border: 1px solid rgba(255, 59, 48, 0.3);
+    border: none;
+    background: transparent;
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: 0.2s;
+}
+.record-trigger:hover {
+    transform: scale(1.05);
+    border-color: rgba(255, 255, 255, 0.3);
 }
 
-.btn-record:hover {
+.record-dot {
+    width: 32px;
+    height: 32px;
     background: var(--accent-red);
-    color: white;
-    transform: scale(1.1);
+    border-radius: 50%;
+    box-shadow: 0 2px 10px var(--accent-red-dim);
 }
 
-.btn-stop {
-    width: 48px;
-    height: 48px;
+/* --- Timer Badge (Recording State) --- */
+.timer-badge {
+    height: 36px;
+    padding: 0 16px;
+    background: var(--accent-red);
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: white;
+    font-weight: 600;
+    font-size: 14px;
+    font-feature-settings: "tnum";
+    box-shadow: 0 4px 12px var(--accent-red-dim);
+}
+
+.pulse-dot {
+    width: 6px;
+    height: 6px;
+    background: white;
+    border-radius: 50%;
+    animation: blink 1s infinite;
+}
+
+/* --- Stop & Action Buttons --- */
+.stop-btn {
+    width: 36px;
+    height: 36px;
     background: rgba(255, 255, 255, 0.1);
     color: white;
+    border: none;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
 }
-
-.btn-stop:hover {
+.stop-btn:hover {
     background: rgba(255, 255, 255, 0.2);
 }
 
-/* Typography */
-.timer {
-    font-variant-numeric: tabular-nums;
-    color: var(--accent-red);
+.action-btn {
+    height: 32px;
+    padding: 0 14px;
+    background: white;
+    color: black;
+    border: none;
+    border-radius: 16px;
+    font-size: 13px;
     font-weight: 600;
-    font-size: 14px;
-    min-width: 45px;
-    text-align: center;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+.action-btn:hover {
+    opacity: 0.9;
 }
 
-.pill-divider {
-    width: 1px;
-    height: 20px;
-    background: rgba(255, 255, 255, 0.1);
+.fmt-select {
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    font-size: 12px;
+    margin-right: 8px;
+    outline: none;
+    cursor: pointer;
 }
 
-/* Resize Handles - Invisible but interactable */
+.review-text {
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+}
+
+@keyframes blink {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.4;
+    }
+}
+
+/* --- Resizers (Invisible) --- */
 .resize-zone {
     position: absolute;
     z-index: 50;
-    background: transparent;
 }

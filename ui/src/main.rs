@@ -3,19 +3,14 @@
 #![allow(non_snake_case)]
 
 mod app;
+mod components; // Loads ui/src/components.rs
 mod hooks;
-mod components {
-    pub mod control_bar;
-    pub mod icons;
-    pub mod resize_handle;
-}
 mod processes;
 mod state;
 
 use app::App;
-use dioxus::desktop::{Config, WindowBuilder};
-// FIX: Switch back to LogicalSize for High DPI support
 use dioxus::desktop::tao::dpi::LogicalSize;
+use dioxus::desktop::{Config, WindowBuilder};
 use dioxus::prelude::*;
 
 fn main() {
@@ -30,7 +25,6 @@ fn main() {
                 .with_always_on_top(true)
                 .with_maximized(false)
                 .with_resizable(true)
-                // FIX: Use LogicalSize 800x600
                 .with_inner_size(LogicalSize::new(800.0, 600.0)),
         )
         .with_background_color((0, 0, 0, 0));

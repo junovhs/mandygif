@@ -20,7 +20,6 @@ pub fn use_recorder() -> RecorderController {
     let window = use_window();
     let rec_window = window.clone();
 
-    // FIX: Wrap closure in Callback::new()
     let start = Callback::new(move |()| {
         if *state.mode.read() == AppMode::Recording {
             return;
@@ -31,11 +30,16 @@ pub fn use_recorder() -> RecorderController {
             .unwrap_or(PhysicalPosition::new(0, 0));
         let outer_size = rec_window.outer_size();
 
+        // FIX: Enforce even dimensions to prevent x264 crash
+        // Truncate to nearest even number
+        let width = (outer_size.width / 2) * 2;
+        let height = (outer_size.height / 2) * 2;
+
         let region = mandygif_protocol::CaptureRegion {
             x: outer_pos.x + 1,
             y: outer_pos.y + 1,
-            width: outer_size.width - 2,
-            height: outer_size.height - 2,
+            width: width - 2,
+            height: height - 2,
         };
 
         state.mode.set(AppMode::Recording);
@@ -74,14 +78,12 @@ pub fn use_recorder() -> RecorderController {
         });
     });
 
-    // FIX: Wrap closure in Callback::new()
     let stop = Callback::new(move |()| {
         if let Some(tx) = state.stop_tx.take() {
             let _ = tx.send(());
         }
     });
 
-    // FIX: Wrap closure in Callback::new()
     let export = Callback::new(move |()| {
         let Some(path) = state.rec_path.read().clone() else {
             return;

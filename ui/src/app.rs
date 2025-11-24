@@ -15,21 +15,19 @@ pub fn App() -> Element {
     let window = use_window();
     let recorder = use_recorder();
 
-    // Initial size
+    // Initial size setup
     let win_startup = window.clone();
     use_hook(move || {
-        // FIX: Removed `let _ =` (clippy::let_unit_value)
         win_startup.set_inner_size(LogicalSize::new(800.0, 600.0));
     });
 
     let current_mode = *state.mode.read();
     let drag_win = window.clone();
 
-    // Determine state class for CSS
+    // Class determines border color & background tint
     let state_class = match current_mode {
         AppMode::Recording => "state-recording",
         AppMode::Review | AppMode::Exporting => "state-review",
-        // FIX: Explicit match (clippy::match_wildcard_for_single_variants)
         AppMode::Idle => "state-idle",
     };
 
@@ -39,18 +37,16 @@ pub fn App() -> Element {
         div {
             class: "app-frame {state_class}",
 
-            // 1. Resize Handles (Only when not recording)
+            // 1. Resize Handles (Only interactive in Idle)
             if current_mode == AppMode::Idle {
                 ResizeHandles {}
             }
 
-            // 2. Drag Header (Invisible but usable area at top)
-            if current_mode == AppMode::Idle {
-                div {
-                    class: "drag-header",
-                    onmousedown: move |_| drag_win.drag(),
-                    // Optional: Visual indicator for drag area if needed
-                }
+            // 2. Visible Drag Bar (Top) - "Obviously grabbable"
+            div {
+                class: "drag-bar",
+                onmousedown: move |_| drag_win.drag(),
+                span { class: "drag-bar-label", "MandyGIF" }
             }
 
             // 3. Floating Control Bar

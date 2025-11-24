@@ -11,29 +11,35 @@ pub fn ControlBar(
 ) -> Element {
     let mut state = use_app_state();
     let mode = state.mode.read();
-
-    // Dereference for math
     let duration = *state.duration_ms.read();
 
-    // Format: 00:00
     let sec = (duration / 1000) % 60;
     let min = (duration / 1000) / 60;
     let time_str = format!("{min:02}:{sec:02}");
+
+    // Mock settings handler
+    let on_settings = move |_| {
+        println!("Settings clicked - TODO: Open Settings Modal");
+    };
 
     rsx! {
         div {
             class: "control-shell",
 
-            // ZONE 1: Settings (Left)
+            // ZONE 1: Settings
             if *mode != AppMode::Exporting {
                 div {
                     class: "zone-left",
-                    // Removed Mic/Speaker icons
-                    button { class: "icon-btn", title: "Settings", IconSettings {} }
+                    button {
+                        class: "icon-btn",
+                        title: "Settings",
+                        onclick: on_settings,
+                        IconSettings {}
+                    }
                 }
             }
 
-            // ZONE 2: Primary Action (Center)
+            // ZONE 2: Record/Timer
             div {
                 class: "zone-center",
                 if *mode == AppMode::Idle {
@@ -53,7 +59,7 @@ pub fn ControlBar(
                 }
             }
 
-            // ZONE 3: Secondary Action (Right)
+            // ZONE 3: Stop/Export
             div {
                 class: "zone-right",
                 if *mode == AppMode::Recording {

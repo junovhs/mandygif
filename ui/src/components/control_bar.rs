@@ -1,5 +1,5 @@
 // warden:ignore
-use crate::components::icons::{IconExport, IconSettings, IconStop};
+use crate::components::icons::{IconExport, IconStop};
 use crate::state::{use_app_state, AppMode};
 use dioxus::prelude::*;
 
@@ -17,29 +17,16 @@ pub fn ControlBar(
     let min = (duration / 1000) / 60;
     let time_str = format!("{min:02}:{sec:02}");
 
-    // Mock settings handler
-    let on_settings = move |_| {
-        println!("Settings clicked - TODO: Open Settings Modal");
-    };
-
     rsx! {
         div {
             class: "control-shell",
 
-            // ZONE 1: Settings
+            // ZONE 1: Left (Empty for now, cleaner look)
             if *mode != AppMode::Exporting {
-                div {
-                    class: "zone-left",
-                    button {
-                        class: "icon-btn",
-                        title: "Settings",
-                        onclick: on_settings,
-                        IconSettings {}
-                    }
-                }
+                div { class: "zone-left" }
             }
 
-            // ZONE 2: Record/Timer
+            // ZONE 2: Center (Record/Timer)
             div {
                 class: "zone-center",
                 if *mode == AppMode::Idle {
@@ -59,7 +46,7 @@ pub fn ControlBar(
                 }
             }
 
-            // ZONE 3: Stop/Export
+            // ZONE 3: Right (Stop/Export)
             div {
                 class: "zone-right",
                 if *mode == AppMode::Recording {

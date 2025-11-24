@@ -2,11 +2,11 @@
 members = [
     "core/protocol",
     "core/recorder-linux",
-    "core/recorder-mac", 
+    "core/recorder-mac",
     "core/recorder-win",
     "core/encoder",
     "core/captions",
-    "core/region-selector",
+    # REMOVED: "core/region-selector",
     "ui",
 ]
 resolver = "2"

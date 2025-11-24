@@ -16,7 +16,6 @@ anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+# REMOVED: serde / serde_json (Not used directly in UI)
 dioxus = { version = "0.6", features = ["desktop"] }
 dioxus-logger = "0.6"

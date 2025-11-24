@@ -1,46 +1,24 @@
-
 # MandyGIF
 
-**MandyGIF** is a high-performance, native screen recording and GIF creation tool written in Rust. It provides a modern, transparent overlay interface designed for capturing specific regions of the screen with pixel-perfect precision.
+**MandyGIF** is a high-performance, native screen recording and GIF creation tool written in Rust. It brings the polished, glassmorphic aesthetic of modern macOS tools to Linux.
 
-Unlike traditional screen recorders that use heavy Electron wrappers or separate selection windows, MandyGIF leverages a transparent Dioxus window that acts as both the viewport and the controller, offering a seamless "what you see is what you get" recording experience.
+Unlike traditional recorders that use heavy Electron wrappers or separate selection windows, MandyGIF uses a transparent **Dioxus** overlay. The window *is* the viewport.
 
----
+![MandyGIF UI](https://via.placeholder.com/800x600?text=MandyGIF+Glass+UI)
 
-## Technical Architecture
+## ✨ Features
 
-MandyGIF is built as a Rust workspace comprising a unified UI and specialized backend cores.
+*   **WYSIWYG Recording:** The window frame defines exactly what gets captured.
+*   **Modern UI:** Glassmorphism, floating control pill, and reactive resize handles.
+*   **High-Performance Backend:**
+    *   **Recording:** Zero-copy X11 capture via **GStreamer** (`ximagesrc` → `x264`).
+    *   **Encoding:** High-quality **FFmpeg** pipeline for GIF (palette generation), WebP, and MP4.
+*   **Sandboxed Architecture:** The UI, Recorder, and Encoder run in separate processes to ensure the UI never freezes during rendering.
 
-### 1. Frontend (UI)
-*   **Framework:** [Dioxus](https://dioxuslabs.com/) (Desktop).
-*   **Rendering:** WebKit/WebView via `wry` and `tao`.
-*   **Window Management:** Custom implementation for transparent, undecorated, always-on-top windows with pass-through input handling and native resizing logic.
-*   **State Management:** Dioxus Signals and Context API.
+## 🛠 Prerequisites (Linux)
 
-### 2. Recording Core (`mandygif-recorder-linux`)
-*   **Engine:** GStreamer.
-*   **Integration:** Directly linked as a Rust library (no IPC latency).
-*   **Pipeline:**
-    *   **Source:** `ximagesrc` (X11 capture) with zero-copy pointers where supported.
-    *   **Encoding:** Hardware-accelerated H.264 (via `x264enc`) wrapped in MP4 containers.
-    *   **Synchronization:** Real-time PTS (Presentation Time Stamp) tracking for accurate duration UI updates.
+MandyGIF currently targets **Linux (X11)**. Ensure the following system dependencies are installed:
 
-### 3. Encoding Core (`mandygif-encoder`)
-*   **Engine:** FFmpeg (spawned subprocess).
-*   **Isolation:** Runs independently to prevent UI freezing during heavy rendering tasks.
-*   **Capabilities:**
-    *   **GIF:** 2-pass encoding with `palettegen` and `paletteuse` for high-quality dithering.
-    *   **MP4:** Re-encoding with CRF (Constant Rate Factor) for optimization.
-    *   **WebP:** Support for both lossy and lossless compression.
-*   **Protocol:** Communicates via a strongly-typed JSONL protocol over `stdin`/`stdout`.
-
----
-
-## Prerequisites (Linux)
-
-MandyGIF currently targets Linux (X11). Ensure the following dependencies are installed:
-
-### System Libraries
 ```bash
 # Debian/Ubuntu
 sudo apt-get update
@@ -61,11 +39,7 @@ sudo apt-get install -y \
 
 *Note: `gstreamer1.0-plugins-ugly` is required for the `x264` encoder.*
 
----
-
-## Build & Run
-
-The project is managed via Cargo.
+## 🚀 Quick Start
 
 1.  **Clone the repository:**
     ```bash
@@ -73,39 +47,52 @@ The project is managed via Cargo.
     cd mandygif
     ```
 
-2.  **Build the project:**
-    ```bash
-    cargo build --release
-    ```
-
-3.  **Run the application:**
+2.  **Run the application:**
     ```bash
     cargo run --bin mandygif
     ```
 
----
+## 🎮 How to Use
 
-## Usage
+### 1. Position & Resize
+*   **Move:** Click and drag the **"MandyGIF" bar** at the top of the window.
+*   **Resize:** Hover over any edge or corner. You will see **white corner brackets** appear. Click and drag to define your capture region.
+*   The interior will have a slight tint to show you exactly what will be recorded.
 
-1.  **Position:** Launch the app. Drag the window via the "MandyGIF" header or resize the edges to frame the content you wish to record.
-2.  **Record:** Click the **RECORD** button. The border will turn red.
-3.  **Stop:** Click **STOP** to finish capturing. The raw footage is saved temporarily to `/tmp/`.
-4.  **Export:**
-    *   Select your desired output format (GIF, MP4, or WebP).
-    *   Click **EXPORT**.
-    *   The final file will be generated in `/tmp/export.[ext]`.
+### 2. Record
+*   Click the **Red Circle** in the floating control pill at the bottom.
+*   The window border will turn **Red**.
+*   The top drag bar will disappear to ensure a clean recording.
 
----
+### 3. Stop
+*   Click the **Stop (Square)** button in the pill.
+*   The border will turn **Green** (Review Mode).
 
-## Project Status
+### 4. Export
+*   Select your format: **GIF**, **MP4**, or **WebP**.
+*   Click **Export**.
+*   The file will be saved to `/tmp/export.[ext]`.
 
-| Component | Status | Notes |
-| :--- | :--- | :--- |
-| **UI** | ✅ Beta | Resizing, dragging, and state management fully functional. |
-| **Linux Recorder** | ✅ Beta | X11 support verified. Wayland support pending. |
-| **Encoder** | ✅ Stable | Supports High-Quality GIF, MP4, WebP. |
-| **Windows Recorder** | 🚧 Planned | WGC (Windows Graphics Capture) implementation pending. |
-| **macOS Recorder** | 🚧 Planned | ScreenCaptureKit implementation pending. |
+## 🏗 Architecture
+
+The project is organized as a Rust Workspace:
+
+| Crate | Description |
+| :--- | :--- |
+| **`ui`** | The Dioxus frontend. Handles the transparent window, state management, and spawns backend processes. |
+| **`core/recorder-linux`** | GStreamer implementation. Captures screen coordinates to raw H.264/MP4. |
+| **`core/encoder`** | FFmpeg implementation. Handles palette generation for GIFs and compression for WebP. |
+| **`core/protocol`** | Shared JSONL types for Inter-Process Communication (IPC). |
+
+## 🗺 Roadmap
+
+- [x] **Linux (X11) Recorder**
+- [x] **Glassmorphic UI**
+- [x] **High-Quality GIF Engine**
+- [ ] **Wayland Support** (via PipeWire)
+- [ ] **macOS Support** (via ScreenCaptureKit)
+- [ ] **Windows Support** (via Windows Graphics Capture)
+- [ ] **Audio Capture** (PulseAudio/PipeWire)
 
 ## License
 

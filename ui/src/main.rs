@@ -12,9 +12,8 @@ mod processes;
 mod state;
 
 use app::App;
+use dioxus::desktop::tao::dpi::PhysicalSize;
 use dioxus::desktop::{Config, WindowBuilder};
-// Import LogicalSize for setting window dimensions
-use dioxus::desktop::tao::dpi::LogicalSize;
 use dioxus::prelude::*;
 
 fn main() {
@@ -27,11 +26,11 @@ fn main() {
                 .with_transparent(true)
                 .with_decorations(false)
                 .with_always_on_top(true)
-                // FIX: Do NOT maximize. Start as a floating window.
                 .with_maximized(false)
                 .with_resizable(true)
-                // Set a reasonable default size
-                .with_inner_size(LogicalSize::new(800.0, 600.0)),
+                // FIX: Use PhysicalSize for exact pixel control on 4K
+                .with_min_inner_size(PhysicalSize::new(300, 150))
+                .with_inner_size(PhysicalSize::new(800, 600)),
         )
         .with_background_color((0, 0, 0, 0));
 

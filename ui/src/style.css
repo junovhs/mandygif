@@ -8,42 +8,34 @@ body {
     overflow: hidden;
     font-family: "Inter", system-ui, sans-serif;
     pointer-events: auto;
+
+    /* FIX: Force minimum dimensions in CSS to prevent layout collapse */
+    min-width: 300px;
+    min-height: 150px;
 }
 
-/* The main container */
 .app-frame {
     width: 100%;
     height: 100%;
     box-sizing: border-box;
     position: relative;
 
-    /* SMOOTHNESS FIX:
-       1. Use outline instead of border to prevent layout shifts.
-       2. 2px width is much more stable than 1px during movement.
-       3. 'dashed' gives that "Snipping Tool" feel (optional, change to 'solid' if preferred).
-    */
     outline-width: 2px;
     outline-style: dashed;
-    outline-offset: -2px; /* Draw inside the window bounds so it doesn't clip */
-
-    /* High-contrast shadow to prevent "disappearing" on similar colored backgrounds */
+    outline-offset: -2px;
     box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.1);
-
-    /* Hardware acceleration hint */
     will-change: outline-color;
 }
 
-/* State-based classes instead of inline styles */
 .mode-idle {
     outline-color: #00ff00;
-    /* Subtle pulse animation for "Ready" state */
     animation: pulse-green 2s infinite;
 }
 
 .mode-recording {
     outline-color: #ff0000;
-    outline-style: solid; /* Solid line when recording for certainty */
-    box-shadow: inset 0 0 10px rgba(255, 0, 0, 0.3); /* Red glow */
+    outline-style: solid;
+    box-shadow: inset 0 0 10px rgba(255, 0, 0, 0.3);
 }
 
 .mode-review {
@@ -67,10 +59,9 @@ body {
 [class^="handle-"] {
     position: absolute;
     z-index: 9999;
-    background: transparent;
+    background: rgba(255, 255, 255, 0.01);
 }
 
-/* Corners - Bigger hit targets */
 .handle-nw {
     top: 0;
     left: 0;
@@ -100,7 +91,6 @@ body {
     cursor: se-resize;
 }
 
-/* Sides */
 .handle-n {
     top: 0;
     left: 20px;
@@ -133,7 +123,6 @@ body {
 /* --- UI ELEMENTS --- */
 .header {
     pointer-events: auto;
-    /* Add a subtle backdrop blur for a premium glass feel */
     backdrop-filter: blur(5px);
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
     position: relative;

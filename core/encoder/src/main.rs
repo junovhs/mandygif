@@ -12,7 +12,11 @@ use std::io::{self, BufRead, Write};
 use tracing::{error, info};
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    // FIX: Force logs to stderr
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter("info")
+        .init();
 
     info!("encoder starting (protocol v{})", PROTOCOL_VERSION);
     ffmpeg::check_ffmpeg()?;

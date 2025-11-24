@@ -2,7 +2,7 @@
 #![allow(clippy::match_same_arms)]
 #![allow(clippy::uninlined_format_args)]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use mandygif_protocol::*;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -16,18 +16,41 @@ pub async fn run_recorder(
     stop_rx: &mut mpsc::UnboundedReceiver<()>,
     region: CaptureRegion,
 ) -> Result<()> {
-    let bin = std::env::current_exe()?
+    let exe = std::env::current_exe()?;
+    let bin_dir = exe
         .parent()
-        .unwrap()
-        .join("recorder-linux");
+        .context("Failed to determine executable directory")?;
+    let bin = bin_dir.join("recorder-linux");
+
     let mut child = Command::new(&bin)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .spawn()?;
+        .stderr(std::process::Stdio::piped()) // Capture stderr
+        .spawn()
+        .context("Failed to spawn recorder process")?;
 
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("Failed to open recorder stdin")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("Failed to open recorder stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Failed to open recorder stderr")?;
+
     let mut reader = BufReader::new(stdout).lines();
+    let mut err_reader = BufReader::new(stderr).lines();
+
+    // Spawn a task to log stderr so we don't miss GStreamer errors
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = err_reader.next_line().await {
+            error!("[recorder-linux stderr] {}", line);
+        }
+    });
 
     let cmd = RecorderCommand::Start {
         region,
@@ -39,37 +62,77 @@ pub async fn run_recorder(
     let json = to_jsonl(&cmd)?;
     stdin.write_all(json.as_bytes()).await?;
 
+    let mut exit_reason = None;
+
     loop {
         tokio::select! {
-            _ = stop_rx.recv() => {
-                let stop_cmd = to_jsonl(&RecorderCommand::Stop)?;
-                let _ = stdin.write_all(stop_cmd.as_bytes()).await;
+            msg = stop_rx.recv() => {
+                match msg {
+                    Some(()) => {
+                        let stop_cmd = to_jsonl(&RecorderCommand::Stop)?;
+                        // If write fails, child is likely dead
+                        if let Err(e) = stdin.write_all(stop_cmd.as_bytes()).await {
+                            error!("Failed to send stop command: {}", e);
+                            break;
+                        }
+                    }
+                    None => break, // Channel closed
+                }
             }
             line = reader.next_line() => {
                 match line {
-                    Ok(Some(l)) => handle_line(&l, &tx),
-                    Ok(None) => break,
-                    Err(_) => break,
+                    Ok(Some(l)) => {
+                        if handle_line(&l, &tx) {
+                            exit_reason = Some("normal_stop");
+                            break;
+                        }
+                    },
+                    Ok(None) => {
+                        error!("Recorder stdout closed unexpectedly");
+                        break;
+                    },
+                    Err(e) => {
+                        error!("Error reading recorder output: {}", e);
+                        break;
+                    },
                 }
             }
         }
     }
 
-    child.wait().await?;
+    // Safety Net: If we broke the loop without a proper stop event, tell the UI
+    if exit_reason.is_none() {
+        let _ = tx.send(RecorderEvent::Error {
+            kind: ErrorKind::IoError,
+            hint: "Recorder process died unexpectedly. Check logs.".into(),
+        });
+    }
+
+    drop(stdin);
+    let _ = child.wait().await;
     Ok(())
 }
 
-fn handle_line(line: &str, tx: &mpsc::UnboundedSender<RecorderEvent>) {
+/// Returns true if the loop should exit (Stopped or Error event)
+fn handle_line(line: &str, tx: &mpsc::UnboundedSender<RecorderEvent>) -> bool {
     if !line.starts_with('{') {
-        return;
+        // Log non-JSON output (debugging)
+        info!("[recorder] {}", line);
+        return false;
     }
 
     if let Ok(event) = parse_recorder_event(line) {
+        let should_exit = matches!(
+            event,
+            RecorderEvent::Stopped { .. } | RecorderEvent::Error { .. }
+        );
         let _ = tx.send(event);
+        return should_exit;
     }
+    false
 }
 
-/// Spawn encoder process.
+// ... run_encoder (unchanged from previous valid state) ...
 pub async fn run_encoder(
     input: PathBuf,
     fmt: &str,
@@ -77,11 +140,17 @@ pub async fn run_encoder(
     trim: (u64, u64),
     scale: u32,
 ) -> Result<()> {
-    let bin = std::env::current_exe()?.parent().unwrap().join("encoder");
+    let exe = std::env::current_exe()?;
+    let bin_dir = exe
+        .parent()
+        .context("Failed to determine executable directory")?;
+    let bin = bin_dir.join("encoder");
+
     let mut child = Command::new(&bin)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .context("Failed to spawn encoder process")?;
 
     let cmd = build_encode_cmd(input, fmt, fps, trim, scale);
 
@@ -90,7 +159,10 @@ pub async fn run_encoder(
         stdin.write_all(json.as_bytes()).await?;
     }
 
-    let stdout = child.stdout.take().unwrap();
+    let stdout = child
+        .stdout
+        .take()
+        .context("Failed to open encoder stdout")?;
     let mut reader = BufReader::new(stdout).lines();
 
     while let Ok(Some(line)) = reader.next_line().await {

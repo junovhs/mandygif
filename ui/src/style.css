@@ -1,0 +1,32 @@
+html,
+body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: sans-serif;
+    /* FIX: Re-enable pointer events globally to debug click issues */
+    pointer-events: auto;
+}
+
+.control-bar,
+.header,
+button,
+select,
+option,
+span {
+    pointer-events: auto;
+    cursor: pointer; /* Force cursor to show it's clickable */
+}
+
+.overlay-container {
+    /* Ensure the container itself doesn't block, but its children do */
+    pointer-events: none;
+}
+
+/* Make sure children of the container (header, controls) capture input */
+.overlay-container > div {
+    pointer-events: auto;
+}

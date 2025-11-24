@@ -18,8 +18,6 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-# Slint UI framework
-slint = "1.4"
-
-[build-dependencies]
-slint-build = "1.4"
+# Dioxus UI
+dioxus = { version = "0.6", features = ["desktop"] }
+dioxus-logger = "0.6"

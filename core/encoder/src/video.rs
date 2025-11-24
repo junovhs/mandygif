@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use mandygif_protocol::{Caption, TrimRange};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use tracing::debug;
+use tracing::{debug, error};
 
 /// Encode MP4 using ffmpeg.
 pub fn encode_mp4(
@@ -24,7 +24,9 @@ pub fn encode_mp4(
     let filter = build_filter(fps, scale, caps)?;
 
     debug!("Encoding MP4 (CRF {})", crf);
-    let status = Command::new("ffmpeg")
+
+    // FIX: Use output() to capture stderr for debugging
+    let output = Command::new("ffmpeg")
         .args(["-ss", &start, "-t", &dur])
         .arg("-i")
         .arg(input)
@@ -38,11 +40,13 @@ pub fn encode_mp4(
         .arg(out)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .status()
-        .context("ffmpeg MP4 encoding failed")?;
+        .output()
+        .context("Failed to execute ffmpeg")?;
 
-    if !status.success() {
-        bail!("ffmpeg MP4 encoding failed");
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        error!("FFmpeg stderr: {}", err_msg);
+        bail!("ffmpeg MP4 encoding failed: {}", err_msg);
     }
 
     Ok(())
@@ -78,16 +82,20 @@ pub fn encode_webp(
     }
 
     debug!("Encoding WebP");
-    let status = cmd
+
+    // FIX: Use output() to capture stderr
+    let output = cmd
         .args(["-loop", "0", "-y"])
         .arg(out)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .status()
-        .context("ffmpeg WebP encoding failed")?;
+        .output()
+        .context("Failed to execute ffmpeg")?;
 
-    if !status.success() {
-        bail!("ffmpeg WebP encoding failed");
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        error!("FFmpeg stderr: {}", err_msg);
+        bail!("ffmpeg WebP encoding failed: {}", err_msg);
     }
 
     Ok(())

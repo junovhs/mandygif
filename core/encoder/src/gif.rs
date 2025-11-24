@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use mandygif_protocol::{Caption, LoopMode, TrimRange};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 /// Encode GIF using ffmpeg palettegen.
 pub fn encode_gif(
@@ -26,7 +26,7 @@ pub fn encode_gif(
 
     // Step 1: Generate palette
     debug!("Generating palette for GIF");
-    let status = Command::new("ffmpeg")
+    let output = Command::new("ffmpeg")
         .args(["-ss", &start, "-t", &dur])
         .arg("-i")
         .arg(input)
@@ -36,10 +36,12 @@ pub fn encode_gif(
         .arg(&palette)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .context("Palette generation failed")?;
 
-    if !status.success() {
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        error!("Palette gen failed: {}", err_msg);
         bail!("ffmpeg palette generation failed");
     }
 
@@ -67,16 +69,18 @@ pub fn encode_gif(
         warn!("Ping-pong loop mode not yet implemented for GIF");
     }
 
-    let status = cmd
+    let output = cmd
         .arg("-y")
         .arg(out)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .context("GIF encoding failed")?;
 
-    if !status.success() {
-        bail!("ffmpeg GIF encoding failed");
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        error!("GIF encoding failed: {}", err_msg);
+        bail!("ffmpeg GIF encoding failed: {}", err_msg);
     }
 
     Ok(())

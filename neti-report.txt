@@ -1,0 +1,29 @@
+========================================
+NETI SCAN REPORT
+========================================
+
+SCAN SUMMARY: 35 files | 17098 tokens | Clean
+
+
+
+========================================
+NETI LOCALITY REPORT
+========================================
+
+Mode: warn
+Edges analyzed: 10
+Violations: 0
+Cycles: 0
+Result: PASS
+
+
+========================================
+NETI COMMANDS REPORT
+========================================
+
+$ cargo clippy --all-targets --no-deps -- -D warnings
+> PASS (1333ms)
+
+$ cargo test
+> PASS (32694ms)
+
